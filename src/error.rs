@@ -44,7 +44,7 @@ impl fmt::Display for Mp3Error {
             } => {
                 write!(
                     f,
-                    "Taille du tag ID3v2 invalide : {declared} octets déclarés, mais seulement {available} octets disponibles dans le fichier"
+                    "Taille du tag ID3v2 invalide : {declared} octets, mais seulement {available} octets dans le fichier"
                 )
             }
         }

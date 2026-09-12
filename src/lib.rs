@@ -108,7 +108,7 @@ fn mp3_file_exists(mp3_file: impl AsRef<Path>) -> io::Result<bool> {
 ///
 /// ```ignore
 /// let mp3 = read_mp3_file("musique/chanson.mp3")?;
-/// println!("{} octets lus", mp3.data.len());
+/// println!("{} octets lus", mp3.size());
 /// println!("{}", mp3.header);
 /// ```
 pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Mp3File, Box<dyn std::error::Error>> {
