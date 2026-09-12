@@ -74,7 +74,18 @@ pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Vec<u8>, Box<dyn std:
 
 pub fn read_id3_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
     match read_header(data) {
-        Ok(header) => Ok(header),
+        Ok(header) => {
+            println!("-------------------------------");
+            println!("ID3v2 détecté");
+            println!(
+                "Version : {}.{}",
+                header.version.major, header.version.minor
+            );
+            println!("Flags   : {:02X}", header.flags);
+            println!("Taille  : {} octets", header.size);
+            println!("-------------------------------");
+            Ok(header)
+        }
         Err(e) => Err(e),
     }
 }

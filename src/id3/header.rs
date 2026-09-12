@@ -39,17 +39,6 @@ pub fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
         size,
         data: data[0..tag_end].to_vec(),
     };
-
-    println!("-------------------------------");
-    println!("ID3v2 détecté");
-    println!(
-        "Version : {}.{}",
-        header.version.major, header.version.minor
-    );
-    println!("Flags   : {:02X}", header.flags);
-    println!("Taille  : {} octets", header.size);
-    println!("-------------------------------");
-
     Ok(header)
 }
 
