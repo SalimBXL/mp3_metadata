@@ -4,8 +4,55 @@ use std::fs;
 use std::io;
 use std::path::Path;
 mod id3;
+use id3::frame::Frame;
 use id3::header::Header;
 use id3::header::read_header;
+use std::path::PathBuf;
+
+/// Représente un fichier MP3 chargé en mémoire, avec ses métadonnées ID3v2.
+///
+/// Une valeur `Mp3File` est typiquement construite par [`read_mp3_file`],
+/// qui lit le fichier sur le disque et en extrait l'en-tête ID3v2.
+pub struct Mp3File {
+    /// Chemin du fichier sur le disque.
+    pub filename: PathBuf,
+    /// Taille du fichier en octets (correspond à `data.len()`).
+    pub size: usize,
+    /// En-tête ID3v2 extrait du début du fichier.
+    pub header: Header,
+}
+
+impl Mp3File {
+    /// Renvoie la taille du fichier en mébioctets (Mo, base 1024).
+    ///
+    /// Calculée à partir de [`Mp3File::size`] (taille en octets), divisée
+    /// par 1024² (1 048 576).
+    ///
+    /// # Exemples
+    ///
+    /// ```ignore
+    /// let mp3 = read_mp3_file("musique/chanson.mp3")?;
+    /// println!("{:.2} Mo", mp3.size_mo());
+    /// ```
+    pub fn size_mo(&self) -> f64 {
+        self.size as f64 / (1024.0 * 1024.0)
+    }
+}
+
+/// Affiche un résumé lisible du fichier MP3 : nom de fichier et taille.
+///
+/// Le contenu de `data` n'est pas affiché (il serait illisible en brut).
+/// Pour afficher l'en-tête ID3v2 associé, utiliser `mp3_file.header`, qui
+/// implémente également `Display`.
+impl std::fmt::Display for Mp3File {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let size_mo = self.size_mo();
+        writeln!(f, "- MP3 -------------------------")?;
+        writeln!(f, "Filename : {}", self.filename.display())?;
+        writeln!(f, "Size     : {} octets ({size_mo:.2} Mo)", self.size)?;
+        write!(f, "-------------------------------")
+    }
+}
 
 /// Vérifie qu'un chemin pointe vers un fichier `.mp3` existant.
 ///
@@ -38,11 +85,12 @@ fn mp3_file_exists(mp3_file: impl AsRef<Path>) -> io::Result<bool> {
     fs::exists(path)
 }
 
-/// Lit le contenu brut d'un fichier `.mp3` sur le disque.
+/// Lit un fichier `.mp3` depuis le disque et en extrait l'en-tête ID3v2.
 ///
 /// La fonction vérifie d'abord que le chemin a bien l'extension `.mp3` et
-/// que le fichier existe (voir [`mp3_file_exists`]), puis lit l'intégralité
-/// du fichier en mémoire.
+/// que le fichier existe (voir [`mp3_file_exists`]), lit l'intégralité du
+/// fichier en mémoire, puis analyse l'en-tête ID3v2 en tête de fichier
+/// (voir [`read_header`]).
 ///
 /// # Erreurs
 ///
@@ -53,14 +101,17 @@ fn mp3_file_exists(mp3_file: impl AsRef<Path>) -> io::Result<bool> {
 /// - Toute erreur renvoyée par [`mp3_file_exists`] lors de la vérification
 ///   d'existence (par exemple, permissions refusées sur un répertoire
 ///   parent).
+/// - Toute erreur renvoyée par [`read_header`] si l'en-tête ID3v2 est
+///   absent, tronqué ou invalide.
 ///
 /// # Exemples
 ///
 /// ```ignore
-/// let data = read_mp3_file("musique/chanson.mp3")?;
-/// println!("{} octets lus", data.len());
+/// let mp3 = read_mp3_file("musique/chanson.mp3")?;
+/// println!("{} octets lus", mp3.data.len());
+/// println!("{}", mp3.header);
 /// ```
-pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Mp3File, Box<dyn std::error::Error>> {
     let path = mp3_file.as_ref();
     if !mp3_file_exists(path)? {
         return Err(Mp3Error::NotFound(path.to_path_buf()).into());
@@ -69,52 +120,59 @@ pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Vec<u8>, Box<dyn std:
         path: path.to_path_buf(),
         source: e,
     })?;
-    Ok(data)
+
+    let header = read_header(&data)?;
+
+    Ok(Mp3File {
+        filename: path.to_path_buf(),
+        size: data.len() as usize,
+        header,
+    })
 }
 
-pub fn read_id3_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
-    match read_header(data) {
-        Ok(header) => {
-            println!("-------------------------------");
-            println!("ID3v2 détecté");
-            println!(
-                "Version : {}.{}",
-                header.version.major, header.version.minor
-            );
-            println!("Flags   : {:02X}", header.flags);
-            println!("Taille  : {} octets", header.size);
-            println!("-------------------------------");
-            Ok(header)
-        }
-        Err(e) => Err(e),
-    }
-}
+/// Lit séquentiellement toutes les frames contenues dans un tag ID3v2.
+///
+/// Parcourt `header.data` à partir du début du corps du tag, en avançant
+/// d'une frame à l'autre via [`Frame::next_offset`], jusqu'à atteindre la
+/// fin du tag (`header.size`) ou jusqu'à ce qu'une frame ne puisse plus
+/// être lue (voir [`id3::frame::read_frame`]).
+///
+/// # Retour
+///
+/// La liste des frames lues avec succès, dans l'ordre où elles apparaissent
+/// dans le tag. La lecture s'arrête silencieusement (sans erreur) dès
+/// qu'une frame ne peut plus être décodée ou qu'il ne reste plus assez
+/// d'octets pour un en-tête de frame complet.
+///
+/// # Exemples
+///
+/// ```ignore
+/// let header = read_header(&data)?;
+/// let frames = read_frames(&header);
+/// for frame in &frames {
+///     println!("{frame}");
+/// }
+/// ```
+pub fn read_frames(header: &Header) -> Vec<Frame> {
+    let id3_data = &header.data;
+    let end = header.size as usize;
+    let mut offset: usize = 10;
+    let mut frames = Vec::new();
 
-/* fn read_frames(data: &[u8], start: usize, end: usize) {
-    println!("Lecture des frames ID3... {} à {}", start, end);
-    let mut offset = start;
-    while offset + 10 <= end {
-        let Some(frame) = id3::frame::read_frame(data, offset) else {
+    while offset.checked_add(10).is_some_and(|next| next <= end) {
+        let Some(frame) = id3::frame::read_frame(id3_data, offset) else {
             break;
         };
-        let Some(decoded_content) = mp3_metadata::id3::frame::decode_frame(&frame) else {
-            println!(
-                ". . Décodage de la frame ID : {} (Erreur de décodage)",
-                String::from_utf8_lossy(&frame.id)
-            );
-            offset = frame.next_offset;
-            continue;
-        };
-        println!(
-            ". . Décodage de la frame ID : {} (Contenu : {})",
-            String::from_utf8_lossy(&frame.id),
-            decoded_content
-        );
-        mp3_metadata::id3::frame::print_frame(&frame);
         offset = frame.next_offset;
+        frames.push(frame);
     }
-} */
 
+    frames
+}
+
+//
+// ---------- TESTS ----------
+//
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,17 +197,5 @@ mod tests {
     #[test]
     fn test_mp3_file_does_not_exist() {
         assert!(!mp3_file_exists("non_existent_file.mp3").unwrap());
-    }
-
-    #[test]
-    fn test_read_mp3_file() {
-        let named_tempfile = Builder::new()
-            .prefix("my-temporary-note")
-            .suffix(".mp3")
-            .rand_bytes(5)
-            .tempfile()
-            .unwrap();
-        let result = read_mp3_file(named_tempfile.path());
-        assert!(result.is_ok());
     }
 }

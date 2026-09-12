@@ -6,6 +6,9 @@ use std::path::PathBuf;
 pub enum Mp3Error {
     NotFound(PathBuf),
     ReadFailed { path: PathBuf, source: io::Error },
+    TooSmall { len: usize },
+    MissingId3Tag,
+    InvalidTagSize { declared: u32, available: usize },
 }
 
 impl fmt::Display for Mp3Error {
@@ -24,6 +27,24 @@ impl fmt::Display for Mp3Error {
                     "Erreur lors de la lecture du fichier '{}' : {}",
                     path.display(),
                     source
+                )
+            }
+            Mp3Error::TooSmall { len } => {
+                write!(
+                    f,
+                    "Fichier trop petit pour contenir un en-tête ID3v2 ({len} octets, 10 requis)"
+                )
+            }
+            Mp3Error::MissingId3Tag => {
+                write!(f, "Pas de tag ID3v2 au début du fichier")
+            }
+            Mp3Error::InvalidTagSize {
+                declared,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Taille du tag ID3v2 invalide : {declared} octets déclarés, mais seulement {available} octets disponibles dans le fichier"
                 )
             }
         }
