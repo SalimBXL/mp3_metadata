@@ -1,21 +1,5 @@
 use std::fs;
 
-struct Frame {
-    id: [u8; 4],
-    size: u32,
-    flags: u16,
-    data: Vec<u8>,
-    offset: usize,
-    next_offset: usize,
-}
-struct Header {
-    major: u8,
-    minor: u8,
-    flags: u8,
-    size: u32,
-    data: Vec<u8>,
-}
-
 fn mp3_file_exists(mp3_file: &str) -> bool {
     match fs::exists(mp3_file) {
         Ok(true) => true,
@@ -45,7 +29,7 @@ pub fn read_mp3_file(mp3_file: &str) -> Result<Vec<u8>, Box<dyn std::error::Erro
     Ok(data)
 }
 
-pub fn read_id3_tags(data: &[u8]) {
+/* pub fn read_id3_tags(data: &[u8]) {
     println!("Lecture des tags ID3...");
 
     let header = match read_header(data) {
@@ -64,9 +48,9 @@ pub fn read_id3_tags(data: &[u8]) {
     println!("-------------------------------");
 
     read_frames(&header.data, 0, header.data.len());
-}
+} */
 
-fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
+/* fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
     println!("Lecture de l'en-tête ID3v...");
     if data.len() < 10 {
         println!("Fichier trop petit");
@@ -96,9 +80,9 @@ fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
         size,
         data: data[0..tag_end].to_vec(),
     })
-}
+} */
 
-fn read_frames(data: &[u8], start: usize, end: usize) {
+/* fn read_frames(data: &[u8], start: usize, end: usize) {
     println!("Lecture des frames ID3... {} à {}", start, end);
     let mut offset = start;
     while offset + 10 <= end {
@@ -120,5 +104,22 @@ fn read_frames(data: &[u8], start: usize, end: usize) {
         );
         mp3_metadata::id3::frame::print_frame(&frame);
         offset = frame.next_offset;
+    }
+} */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mp3_file_exists() {
+        assert!(mp3_file_exists("a_kind_of_magic.mp3"));
+        assert!(!mp3_file_exists("non_existent_file.mp3"));
+    }
+
+    #[test]
+    fn test_read_mp3_file() {
+        let result = read_mp3_file("a_kind_of_magic.mp3");
+        assert!(result.is_ok());
     }
 }

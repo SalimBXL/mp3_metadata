@@ -1,8 +1,29 @@
 struct Frame {
-    id: String,
+    id: [u8; 4],
     size: u32,
     flags: u16,
     data: Vec<u8>,
+    offset: usize,
+    next_offset: usize,
+}
+
+enum Id3Frame {
+    Title(String),
+    Artist(String),
+    Album(String),
+    Track(String),
+    Genre(String),
+    Comment(String),
+    Picture {
+        mime_type: String,
+        picture_type: u8,
+        description: String,
+        data: Vec<u8>,
+    },
+    Unknown {
+        id: String,
+        data: Vec<u8>,
+    },
 }
 
 enum DecodedFrame {
