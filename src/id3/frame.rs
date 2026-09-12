@@ -217,10 +217,12 @@ fn decode_text_frame(frame_data: &[u8]) -> Option<String> {
             let text_data = &text_data[2..];
 
             let units: Vec<u16> = text_data
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| match bom {
-                    [0xFF, 0xFE] => u16::from_le_bytes([chunk[0], chunk[1]]),
-                    [0xFE, 0xFF] => u16::from_be_bytes([chunk[0], chunk[1]]),
+                    [0xFF, 0xFE] => u16::from_le_bytes(*chunk),
+                    [0xFE, 0xFF] => u16::from_be_bytes(*chunk),
                     _ => 0,
                 })
                 .collect();
@@ -234,8 +236,10 @@ fn decode_text_frame(frame_data: &[u8]) -> Option<String> {
         // UTF-16BE
         2 => {
             let units: Vec<u16> = text_data
-                .chunks_exact(2)
-                .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| u16::from_be_bytes(*chunk))
                 .collect();
 
             String::from_utf16(&units).ok()
