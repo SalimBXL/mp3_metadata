@@ -1,26 +1,29 @@
-/* enum Id3Frame {
-    Title(String),
-    Artist(String),
-    Album(String),
-    Track(String),
-    Genre(String),
-    Comment(String),
-    Picture {
-        mime_type: String,
-        picture_type: u8,
-        description: String,
-        data: Vec<u8>,
-    },
-    Unknown {
-        id: String,
-        data: Vec<u8>,
-    },
-} */
+/// Contenu décodé d'une frame ID3v2, selon son type.
+///
+/// Une valeur `DecodedFrame` est produite par [`decode_frame`], qui choisit
+/// la variante appropriée en fonction de l'identifiant de la frame
+/// (`TIT2`, `APIC`, `COMM`, etc.).
 #[derive(Debug)]
 enum DecodedFrame {
+    /// Contenu d'une frame texte (ex. `TIT2` pour le titre, `TPE1` pour
+    /// l'artiste, `TALB` pour l'album), décodé selon l'encoding indiqué
+    /// dans la frame (Latin-1, UTF-16 ou UTF-8). Voir [`decode_text_frame`].
     Text(String),
-    Image { mime_type: String, data: Vec<u8> },
+    /// Contenu d'une frame `APIC` (image jointe, ex. pochette d'album).
+    Image {
+        /// Type MIME de l'image (ex. `image/jpeg`).
+        ///
+        /// Non encore extrait des données de la frame : vaut toujours
+        /// `"inconnu"` pour le moment (voir [`decode_frame`]).
+        mime_type: String,
+        /// Données brutes de l'image.
+        data: Vec<u8>,
+    },
+    /// Contenu d'une frame `COMM` (commentaire), décodé en UTF-8 avec
+    /// remplacement des octets invalides, sans tenir compte de l'octet
+    /// d'encoding ni des champs langue/description de la frame.
     Comment(String),
+    /// Contenu brut d'une frame dont l'identifiant n'est pas reconnu.
     Unknown(Vec<u8>),
 }
 
