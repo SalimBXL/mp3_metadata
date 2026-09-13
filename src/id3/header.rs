@@ -16,7 +16,7 @@ pub struct Id3Version {
 /// analyse les 10 premiers octets d'un fichier MP3 pour en extraire la
 /// version, les flags, la taille du tag, ainsi que le tag ID3v2 complet.
 #[derive(Debug)]
-pub struct Header {
+pub struct Id3Tag {
     pub version: Id3Version,
     /// Octet de flags du tag ID3v2 (bits d'options telles que
     /// l'unsynchronisation, la présence d'un extended header, etc.).
@@ -29,7 +29,7 @@ pub struct Header {
     pub data: Vec<u8>,
 }
 
-impl Header {
+impl Id3Tag {
     /// Renvoie la taille du tag ID3v2 en kibioctets (Ko, base 1024).
     ///
     /// Calculée à partir de [`Header::size`] (taille du tag en octets,
@@ -50,7 +50,7 @@ impl Header {
 /// Affiche un résumé lisible de l'en-tête ID3v2 : version, flags et taille.
 ///
 /// Le contenu de `data` n'est pas affiché (il serait illisible en brut).
-impl std::fmt::Display for Header {
+impl std::fmt::Display for Id3Tag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let size_ko = self.size_ko();
         writeln!(f, "- HEADER ----------------------")?;
@@ -86,7 +86,7 @@ impl std::fmt::Display for Header {
 /// let header = read_header(&data)?;
 /// println!("{header}");
 /// ```
-pub fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
+pub fn read_header(data: &[u8]) -> Result<Id3Tag, Box<dyn std::error::Error>> {
     if data.len() < 10 {
         return Err(Mp3Error::TooSmall { len: data.len() }.into());
     }
@@ -112,7 +112,7 @@ pub fn read_header(data: &[u8]) -> Result<Header, Box<dyn std::error::Error>> {
             available: data.len(),
         })?;
 
-    let header = Header {
+    let header = Id3Tag {
         version: Id3Version { major, minor },
         flags,
         size,

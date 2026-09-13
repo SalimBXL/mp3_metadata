@@ -5,9 +5,20 @@ use std::io;
 use std::path::Path;
 mod id3;
 use id3::frame::Frame;
-use id3::header::Header;
+use id3::header::Id3Tag;
 use id3::header::read_header;
 use std::path::PathBuf;
+
+pub struct MpegAudio {
+    pub data: Vec<u8>,
+}
+
+pub struct Id3v1Tag {
+    pub version: String,
+    pub flags: u8,
+    pub size: u32,
+    pub data: Vec<u8>,
+}
 
 /// Représente un fichier MP3 chargé en mémoire, avec ses métadonnées ID3v2.
 ///
@@ -15,11 +26,15 @@ use std::path::PathBuf;
 /// qui lit le fichier sur le disque et en extrait l'en-tête ID3v2.
 pub struct Mp3File {
     /// Chemin du fichier sur le disque.
-    pub filename: PathBuf,
+    pub path: PathBuf,
     /// Taille du fichier en octets (correspond à `data.len()`).
     pub size: usize,
     /// En-tête ID3v2 extrait du début du fichier.
-    pub header: Header,
+    pub id3v2: Option<Id3Tag>,
+    /// Séquence audio
+    pub audio: Option<MpegAudio>,
+    /// Tags ID3v1 extrait de la fin du fichier.
+    pub id3v1: Option<Id3v1Tag>,
 }
 
 impl Mp3File {
@@ -48,7 +63,7 @@ impl std::fmt::Display for Mp3File {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let size_mo = self.size_mo();
         writeln!(f, "- MP3 -------------------------")?;
-        writeln!(f, "Filename : {}", self.filename.display())?;
+        writeln!(f, "Filename : {}", self.path.display())?;
         writeln!(f, "Size     : {} octets ({size_mo:.2} Mo)", self.size)?;
         write!(f, "-------------------------------")
     }
@@ -113,20 +128,35 @@ fn mp3_file_exists(mp3_file: impl AsRef<Path>) -> io::Result<bool> {
 /// ```
 pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Mp3File, Box<dyn std::error::Error>> {
     let path = mp3_file.as_ref();
+
     if !mp3_file_exists(path)? {
         return Err(Mp3Error::NotFound(path.to_path_buf()).into());
     }
+
     let data = fs::read(path).map_err(|e| Mp3Error::ReadFailed {
         path: path.to_path_buf(),
         source: e,
     })?;
 
-    let header = read_header(&data)?;
+    let header = match read_header(&data) {
+        Ok(header) => Some(header),
+        Err(e) => {
+            if e.downcast_ref::<Mp3Error>()
+                .is_some_and(|err| matches!(err, Mp3Error::MissingId3Tag))
+            {
+                None
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     Ok(Mp3File {
-        filename: path.to_path_buf(),
-        size: data.len() as usize,
-        header,
+        path: path.to_path_buf(),
+        size: data.len(),
+        id3v2: header,
+        id3v1: None,
+        audio: None,
     })
 }
 
@@ -160,7 +190,7 @@ pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Mp3File, Box<dyn std:
 ///     println!("{frame}");
 /// }
 /// ```
-pub fn read_frames(header: &Header) -> Result<Vec<Frame>, Box<dyn std::error::Error>> {
+pub fn read_frames(header: &Id3Tag) -> Result<Vec<Frame>, Box<dyn std::error::Error>> {
     let id3_data = &header.data;
     let end = header.size as usize;
     let mut offset: usize = 10;
