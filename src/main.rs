@@ -8,7 +8,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", id3v2);
 
         let frames = mp3_metadata::read_frames(id3v2)?;
-
         for frame in &frames {
             println!("{}", frame);
         }
