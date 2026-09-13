@@ -140,34 +140,43 @@ pub fn read_mp3_file(mp3_file: impl AsRef<Path>) -> Result<Mp3File, Box<dyn std:
 /// # Retour
 ///
 /// La liste des frames lues avec succès, dans l'ordre où elles apparaissent
-/// dans le tag. La lecture s'arrête silencieusement (sans erreur) dès
-/// qu'une frame ne peut plus être décodée ou qu'il ne reste plus assez
-/// d'octets pour un en-tête de frame complet.
+/// dans le tag. La lecture s'arrête normalement (sans erreur) dès que le
+/// padding de fin de tag est atteint. En revanche, une frame tronquée ou
+/// dont la taille déclarée dépasse les données disponibles interrompt la
+/// lecture avec une erreur (voir [`Mp3Error::FrameTooShort`] et
+/// [`Mp3Error::FrameSizeOverflow`]).
+///
+/// # Erreurs
+///
+/// Toute erreur renvoyée par [`id3::frame::read_frame`] lors de la lecture
+/// d'une frame (fichier tronqué, en-tête de frame corrompu).
 ///
 /// # Exemples
 ///
 /// ```ignore
 /// let header = read_header(&data)?;
-/// let frames = read_frames(&header);
+/// let frames = read_frames(&header)?;
 /// for frame in &frames {
 ///     println!("{frame}");
 /// }
 /// ```
-pub fn read_frames(header: &Header) -> Vec<Frame> {
+pub fn read_frames(header: &Header) -> Result<Vec<Frame>, Box<dyn std::error::Error>> {
     let id3_data = &header.data;
     let end = header.size as usize;
     let mut offset: usize = 10;
     let mut frames = Vec::new();
 
     while offset.checked_add(10).is_some_and(|next| next <= end) {
-        let Some(frame) = id3::frame::read_frame(id3_data, offset) else {
-            break;
-        };
-        offset = frame.next_offset;
-        frames.push(frame);
+        match id3::frame::read_frame(id3_data, offset)? {
+            Some(frame) => {
+                offset = frame.next_offset;
+                frames.push(frame);
+            }
+            None => break,
+        }
     }
 
-    frames
+    Ok(frames)
 }
 
 //

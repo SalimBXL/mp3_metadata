@@ -5,10 +5,32 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum Mp3Error {
     NotFound(PathBuf),
-    ReadFailed { path: PathBuf, source: io::Error },
-    TooSmall { len: usize },
+    ReadFailed {
+        path: PathBuf,
+        source: io::Error,
+    },
+    TooSmall {
+        len: usize,
+    },
     MissingId3Tag,
-    InvalidTagSize { declared: u32, available: usize },
+    InvalidTagSize {
+        declared: u32,
+        available: usize,
+    },
+    FrameTooShort {
+        offset: usize,
+    },
+    FrameSizeOverflow {
+        offset: usize,
+        declared: u32,
+        available: usize,
+    },
+    UnknownTextEncoding {
+        encoding: u8,
+    },
+    InvalidTextData {
+        encoding: u8,
+    },
 }
 
 impl fmt::Display for Mp3Error {
@@ -45,6 +67,31 @@ impl fmt::Display for Mp3Error {
                 write!(
                     f,
                     "Taille du tag ID3v2 invalide : {declared} octets, mais seulement {available} octets dans le fichier"
+                )
+            }
+            Mp3Error::FrameTooShort { offset } => {
+                write!(
+                    f,
+                    "Frame ID3v2 tronquée à l'offset {offset} : pas assez d'octets pour un en-tête de frame complet"
+                )
+            }
+            Mp3Error::FrameSizeOverflow {
+                offset,
+                declared,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Frame ID3v2 à l'offset {offset} : taille déclarée ({declared} octets) dépasse les données disponibles ({available} octets)"
+                )
+            }
+            Mp3Error::UnknownTextEncoding { encoding } => {
+                write!(f, "Encoding de texte ID3v2 inconnu : {encoding}")
+            }
+            Mp3Error::InvalidTextData { encoding } => {
+                write!(
+                    f,
+                    "Données de texte invalides pour l'encoding {encoding} (BOM manquant/invalide ou séquence mal formée)"
                 )
             }
         }

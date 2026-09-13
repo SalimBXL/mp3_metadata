@@ -1,3 +1,5 @@
+use crate::error::Mp3Error;
+
 /// Contenu décodé d'une frame ID3v2, selon son type.
 ///
 /// Une valeur `DecodedFrame` est produite par [`decode_frame`], qui choisit
@@ -60,17 +62,20 @@ pub struct Frame {
 /// Le contenu est décodé via [`decode_frame`] : le texte est affiché tel
 /// quel pour les frames texte et les commentaires, la taille et le MIME
 /// type pour une image, la taille pour les frames non reconnues. Si le
-/// décodage échoue, aucun contenu n'est affiché.
+/// décodage échoue, le message d'erreur est affiché à la place du contenu.
 impl std::fmt::Display for Frame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let decoded_data = match decode_frame(&self.id, &self.frame_data) {
-            Some(DecodedFrame::Text(texte)) => texte,
-            Some(DecodedFrame::Comment(commentaire)) => commentaire,
-            Some(DecodedFrame::Image { mime_type, data }) => {
+            Ok(Some(DecodedFrame::Text(texte))) => texte,
+            Ok(Some(DecodedFrame::Comment(commentaire))) => commentaire,
+            Ok(Some(DecodedFrame::Image { mime_type, data })) => {
                 format!("Image ({mime_type}, {} octets)", data.len())
             }
-            Some(DecodedFrame::Unknown(data)) => format!("Unknown data: {} octets", data.len()),
-            None => String::from(""),
+            Ok(Some(DecodedFrame::Unknown(data))) => {
+                format!("Unknown data: {} octets", data.len())
+            }
+            Ok(None) => String::from(""),
+            Err(e) => format!("Erreur de décodage : {e}"),
         };
         writeln!(f, "- FRAME -----------------------")?;
         writeln!(f, "Id          : {}", String::from_utf8_lossy(&self.id))?;
@@ -91,18 +96,23 @@ impl std::fmt::Display for Frame {
 ///
 /// # Retour
 ///
-/// - `Some(frame)` si une frame valide a pu être lue à `offset`.
-/// - `None` si :
-///   - il ne reste pas assez d'octets à partir de `offset` pour contenir
-///     un en-tête de frame complet ou son corps déclaré (fichier tronqué
-///     ou décalage invalide) ;
-///   - l'id de la frame est composé uniquement d'octets nuls, ce qui
-///     correspond au padding de fin de tag prévu par la spécification
-///     ID3v2, et signale donc qu'il n'y a plus de frame à lire.
-pub fn read_frame(id3_data: &[u8], offset: usize) -> Option<Frame> {
-    let header_end = offset.checked_add(10)?;
+/// - `Ok(Some(frame))` si une frame valide a pu être lue à `offset`.
+/// - `Ok(None)` si l'id de la frame est composé uniquement d'octets nuls,
+///   ce qui correspond au padding de fin de tag prévu par la spécification
+///   ID3v2 : ce n'est pas une erreur, cela signale qu'il n'y a plus de
+///   frame à lire.
+/// - `Err(Mp3Error::FrameTooShort)` s'il ne reste pas assez d'octets à
+///   partir de `offset` pour contenir un en-tête de frame complet (fichier
+///   tronqué ou décalage invalide).
+/// - `Err(Mp3Error::FrameSizeOverflow)` si la taille de frame déclarée dans
+///   l'en-tête dépasse les octets réellement disponibles dans `id3_data`
+///   (fichier tronqué ou en-tête de frame corrompu).
+pub fn read_frame(id3_data: &[u8], offset: usize) -> Result<Option<Frame>, Mp3Error> {
+    let header_end = offset
+        .checked_add(10)
+        .ok_or(Mp3Error::FrameTooShort { offset })?;
     if id3_data.len() < header_end {
-        return None;
+        return Err(Mp3Error::FrameTooShort { offset });
     }
 
     let frame_id: [u8; 4] = id3_data[offset..offset + 4]
@@ -111,7 +121,7 @@ pub fn read_frame(id3_data: &[u8], offset: usize) -> Option<Frame> {
 
     if frame_id == [0, 0, 0, 0] {
         // Padding de fin de tag : plus de frame à lire.
-        return None;
+        return Ok(None);
     }
 
     let frame_size = &id3_data[offset + 4..offset + 8];
@@ -119,21 +129,25 @@ pub fn read_frame(id3_data: &[u8], offset: usize) -> Option<Frame> {
     let size = u32::from_be_bytes([frame_size[0], frame_size[1], frame_size[2], frame_size[3]]);
     let flags = u16::from_be_bytes([frame_flags[0], frame_flags[1]]);
 
-    let frame_end = header_end.checked_add(size as usize)?;
-    if frame_end > id3_data.len() {
-        return None;
-    }
+    let frame_end = header_end
+        .checked_add(size as usize)
+        .filter(|&end| end <= id3_data.len())
+        .ok_or(Mp3Error::FrameSizeOverflow {
+            offset,
+            declared: size,
+            available: id3_data.len(),
+        })?;
 
     let frame_data = id3_data[header_end..frame_end].to_vec();
 
-    Some(Frame {
+    Ok(Some(Frame {
         id: frame_id,
         size,
         flags,
         frame_data,
         offset,
         next_offset: frame_end,
-    })
+    }))
 }
 
 /// Décode le contenu d'une frame ID3v2 selon son identifiant.
@@ -146,18 +160,19 @@ pub fn read_frame(id3_data: &[u8], offset: usize) -> Option<Frame> {
 ///
 /// # Retour
 ///
-/// - `None` si `frame_data` est vide, ou si le décodage texte d'une frame
-///   texte connue échoue (encoding inconnu, séquence invalide — voir
-///   [`decode_text_frame`]).
-/// - `Some(DecodedFrame)` sinon.
+/// - `Ok(None)` si `frame_data` est vide (rien à décoder, ce n'est pas une
+///   erreur).
+/// - `Ok(Some(DecodedFrame))` si le décodage réussit.
+/// - `Err(Mp3Error)` si le décodage texte d'une frame texte connue échoue
+///   (encoding inconnu, séquence invalide — voir [`decode_text_frame`]).
 ///
 /// # À faire
 ///
 /// L'extraction du MIME type réel pour les frames `APIC` n'est pas encore
 /// implémentée (`mime_type` vaut toujours `"inconnu"`).
-fn decode_frame(frame_id: &[u8; 4], frame_data: &[u8]) -> Option<DecodedFrame> {
+fn decode_frame(frame_id: &[u8; 4], frame_data: &[u8]) -> Result<Option<DecodedFrame>, Mp3Error> {
     if frame_data.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let decoded = match frame_id {
@@ -172,7 +187,7 @@ fn decode_frame(frame_id: &[u8; 4], frame_data: &[u8]) -> Option<DecodedFrame> {
         _ => DecodedFrame::Unknown(frame_data.to_vec()),
     };
 
-    Some(decoded)
+    Ok(Some(decoded))
 }
 
 /// Décode le contenu textuel d'une frame ID3v2, en tenant compte de
@@ -187,34 +202,40 @@ fn decode_frame(frame_id: &[u8; 4], frame_data: &[u8]) -> Option<DecodedFrame> {
 ///
 /// # Retour
 ///
-/// `None` si `frame_data` est vide, si l'octet d'encoding n'est pas l'une
-/// des quatre valeurs reconnues, si le BOM est absent ou invalide pour
-/// l'encoding 1, ou si les octets qui suivent ne forment pas une chaîne
-/// valide dans l'encoding indiqué.
+/// - `Ok(String::new())` si `frame_data` est vide (pas d'octet d'encoding :
+///   rien à décoder, ce n'est pas considéré comme une erreur).
+/// - `Ok(texte)` si le décodage réussit.
+/// - `Err(Mp3Error::UnknownTextEncoding)` si l'octet d'encoding n'est pas
+///   l'une des quatre valeurs reconnues (0, 1, 2 ou 3).
+/// - `Err(Mp3Error::InvalidTextData)` si le BOM est absent ou invalide pour
+///   l'encoding 1, ou si les octets qui suivent ne forment pas une chaîne
+///   valide dans l'encoding indiqué.
 ///
 /// Un dernier octet isolé (nombre d'octets restants impair pour un
 /// encoding UTF-16) est silencieusement ignoré plutôt que de provoquer une
 /// erreur.
-fn decode_text_frame(frame_data: &[u8]) -> Option<String> {
-    if frame_data.is_empty() {
-        return None;
-    }
-
-    let encoding = frame_data[0];
-    let text_data = &frame_data[1..];
+fn decode_text_frame(frame_data: &[u8]) -> Result<String, Mp3Error> {
+    let Some((&encoding, text_data)) = frame_data.split_first() else {
+        // Pas d'octet d'encoding : rien à décoder, ce n'est pas une erreur.
+        return Ok(String::new());
+    };
 
     match encoding {
         // ISO-8859-1
-        0 => Some(text_data.iter().map(|&byte| byte as char).collect()),
+        0 => Ok(text_data.iter().map(|&byte| byte as char).collect()),
 
         // UTF-16 avec BOM
         1 => {
             if text_data.len() < 2 {
-                return None;
+                return Err(Mp3Error::InvalidTextData { encoding });
             }
 
             let bom = [text_data[0], text_data[1]];
             let text_data = &text_data[2..];
+
+            if !matches!(bom, [0xFF, 0xFE] | [0xFE, 0xFF]) {
+                return Err(Mp3Error::InvalidTextData { encoding });
+            }
 
             let units: Vec<u16> = text_data
                 .as_chunks::<2>()
@@ -222,15 +243,11 @@ fn decode_text_frame(frame_data: &[u8]) -> Option<String> {
                 .iter()
                 .map(|chunk| match bom {
                     [0xFF, 0xFE] => u16::from_le_bytes(*chunk),
-                    [0xFE, 0xFF] => u16::from_be_bytes(*chunk),
-                    _ => 0,
+                    _ => u16::from_be_bytes(*chunk),
                 })
                 .collect();
 
-            match bom {
-                [0xFF, 0xFE] | [0xFE, 0xFF] => String::from_utf16(&units).ok(),
-                _ => None,
-            }
+            String::from_utf16(&units).map_err(|_| Mp3Error::InvalidTextData { encoding })
         }
 
         // UTF-16BE
@@ -242,13 +259,14 @@ fn decode_text_frame(frame_data: &[u8]) -> Option<String> {
                 .map(|chunk| u16::from_be_bytes(*chunk))
                 .collect();
 
-            String::from_utf16(&units).ok()
+            String::from_utf16(&units).map_err(|_| Mp3Error::InvalidTextData { encoding })
         }
 
         // UTF-8
-        3 => String::from_utf8(text_data.to_vec()).ok(),
+        3 => String::from_utf8(text_data.to_vec())
+            .map_err(|_| Mp3Error::InvalidTextData { encoding }),
 
-        _ => None,
+        _ => Err(Mp3Error::UnknownTextEncoding { encoding }),
     }
 }
 
@@ -261,8 +279,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_decode_text_frame_empty_returns_none() {
-        assert!(decode_text_frame(&[]).is_none());
+    fn test_decode_text_frame_empty_returns_empty_string() {
+        assert_eq!(decode_text_frame(&[]).unwrap(), "");
     }
 
     #[test]
@@ -299,16 +317,22 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_text_frame_utf16_invalid_bom_returns_none() {
+    fn test_decode_text_frame_utf16_invalid_bom_returns_err() {
         let data = [1, 0x12, 0x34, 0x00, 0x48];
-        assert!(decode_text_frame(&data).is_none());
+        assert!(matches!(
+            decode_text_frame(&data),
+            Err(Mp3Error::InvalidTextData { encoding: 1 })
+        ));
     }
 
     #[test]
-    fn test_decode_text_frame_utf16_too_short_for_bom_returns_none() {
+    fn test_decode_text_frame_utf16_too_short_for_bom_returns_err() {
         // Un seul octet après l'encoding : pas assez pour un BOM (2 octets).
         let data = [1, 0xFF];
-        assert!(decode_text_frame(&data).is_none());
+        assert!(matches!(
+            decode_text_frame(&data),
+            Err(Mp3Error::InvalidTextData { encoding: 1 })
+        ));
     }
 
     #[test]
@@ -328,10 +352,13 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_text_frame_utf16be_invalid_surrogate_returns_none() {
+    fn test_decode_text_frame_utf16be_invalid_surrogate_returns_err() {
         // 0xD800 est une moitié de paire de substitution isolée : invalide en UTF-16.
         let data = [2, 0xD8, 0x00];
-        assert!(decode_text_frame(&data).is_none());
+        assert!(matches!(
+            decode_text_frame(&data),
+            Err(Mp3Error::InvalidTextData { encoding: 2 })
+        ));
     }
 
     #[test]
@@ -344,16 +371,22 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_text_frame_utf8_invalid_bytes_returns_none() {
+    fn test_decode_text_frame_utf8_invalid_bytes_returns_err() {
         // 0xFF seul n'est jamais un début de séquence UTF-8 valide.
         let data = [3, 0xFF, 0xFF];
-        assert!(decode_text_frame(&data).is_none());
+        assert!(matches!(
+            decode_text_frame(&data),
+            Err(Mp3Error::InvalidTextData { encoding: 3 })
+        ));
     }
 
     #[test]
-    fn test_decode_text_frame_unknown_encoding_returns_none() {
+    fn test_decode_text_frame_unknown_encoding_returns_err() {
         let data = [9, b'H', b'i'];
-        assert!(decode_text_frame(&data).is_none());
+        assert!(matches!(
+            decode_text_frame(&data),
+            Err(Mp3Error::UnknownTextEncoding { encoding: 9 })
+        ));
     }
 
     /// Construit les octets d'une frame ID3v2 valide : 4 octets d'id,
@@ -370,7 +403,7 @@ mod tests {
     #[test]
     fn test_read_frame_valid() {
         let data = build_frame_bytes(b"TIT2", 0x0000, b"Hello");
-        let frame = read_frame(&data, 0).unwrap();
+        let frame = read_frame(&data, 0).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TIT2");
         assert_eq!(frame.size, 5);
@@ -385,7 +418,7 @@ mod tests {
         let mut data = vec![0xAA; 20]; // du bruit avant la frame
         data.extend(build_frame_bytes(b"TPE1", 0, b"Queen"));
 
-        let frame = read_frame(&data, 20).unwrap();
+        let frame = read_frame(&data, 20).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TPE1");
         assert_eq!(frame.offset, 20);
@@ -395,7 +428,7 @@ mod tests {
     #[test]
     fn test_read_frame_zero_size_body() {
         let data = build_frame_bytes(b"TCON", 0, b"");
-        let frame = read_frame(&data, 0).unwrap();
+        let frame = read_frame(&data, 0).unwrap().unwrap();
 
         assert_eq!(frame.size, 0);
         assert!(frame.frame_data.is_empty());
@@ -405,19 +438,25 @@ mod tests {
     #[test]
     fn test_read_frame_too_short_for_header() {
         let data = [0u8; 5]; // moins de 10 octets
-        assert!(read_frame(&data, 0).is_none());
+        assert!(matches!(
+            read_frame(&data, 0),
+            Err(Mp3Error::FrameTooShort { offset: 0 })
+        ));
     }
 
     #[test]
     fn test_read_frame_exactly_too_short() {
         let data = [0u8; 9]; // 1 octet manquant pour l'en-tête complet
-        assert!(read_frame(&data, 0).is_none());
+        assert!(matches!(
+            read_frame(&data, 0),
+            Err(Mp3Error::FrameTooShort { offset: 0 })
+        ));
     }
 
     #[test]
     fn test_read_frame_padding_returns_none() {
         let data = [0u8; 10]; // id à zéro : padding de fin de tag
-        assert!(read_frame(&data, 0).is_none());
+        assert!(read_frame(&data, 0).unwrap().is_none());
     }
 
     #[test]
@@ -426,21 +465,31 @@ mod tests {
         let mut data = build_frame_bytes(b"APIC", 0, &[0u8; 100]);
         data.truncate(15); // le fichier est tronqué
 
-        assert!(read_frame(&data, 0).is_none());
+        assert!(matches!(
+            read_frame(&data, 0),
+            Err(Mp3Error::FrameSizeOverflow { offset: 0, .. })
+        ));
     }
 
     #[test]
     fn test_read_frame_offset_beyond_data() {
         let data = build_frame_bytes(b"TIT2", 0, b"Hello");
-        assert!(read_frame(&data, data.len()).is_none());
+        let offset = data.len();
+        assert!(matches!(
+            read_frame(&data, offset),
+            Err(Mp3Error::FrameTooShort { .. })
+        ));
     }
 
     #[test]
     fn test_read_frame_offset_overflow_does_not_panic() {
         // Un offset proche de usize::MAX ne doit jamais paniquer par
-        // dépassement arithmétique — checked_add doit renvoyer None.
+        // dépassement arithmétique — checked_add doit renvoyer une erreur.
         let data = [0u8; 20];
-        assert!(read_frame(&data, usize::MAX - 5).is_none());
+        assert!(matches!(
+            read_frame(&data, usize::MAX - 5),
+            Err(Mp3Error::FrameTooShort { .. })
+        ));
     }
 
     #[test]
@@ -451,12 +500,15 @@ mod tests {
         data[0..4].copy_from_slice(b"TIT2");
         data[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
 
-        assert!(read_frame(&data, usize::MAX - 20).is_none());
+        assert!(matches!(
+            read_frame(&data, usize::MAX - 20),
+            Err(Mp3Error::FrameTooShort { .. })
+        ));
     }
 
     #[test]
-    fn test_decode_frame_empty_data_returns_none() {
-        assert!(decode_frame(b"TIT2", &[]).is_none());
+    fn test_decode_frame_empty_data_returns_ok_none() {
+        assert!(decode_frame(b"TIT2", &[]).unwrap().is_none());
     }
 
     #[test]
@@ -465,7 +517,7 @@ mod tests {
         let mut frame_data = vec![3];
         frame_data.extend_from_slice("Bohemian Rhapsody".as_bytes());
 
-        let decoded = decode_frame(b"TIT2", &frame_data).unwrap();
+        let decoded = decode_frame(b"TIT2", &frame_data).unwrap().unwrap();
 
         match decoded {
             DecodedFrame::Text(text) => assert_eq!(text, "Bohemian Rhapsody"),
@@ -481,7 +533,7 @@ mod tests {
         frame_data.extend_from_slice("Queen".as_bytes());
 
         for id in [b"TIT2", b"TPE1", b"TPE2", b"TALB", b"TRCK", b"TCON"] {
-            let decoded = decode_frame(id, &frame_data).unwrap();
+            let decoded = decode_frame(id, &frame_data).unwrap().unwrap();
             assert!(
                 matches!(decoded, DecodedFrame::Text(_)),
                 "frame {:?} devrait être décodée comme Text",
@@ -491,17 +543,20 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_frame_text_invalid_encoding_propagates_none() {
+    fn test_decode_frame_text_invalid_encoding_propagates_err() {
         // Octet d'encoding invalide (ni 0, 1, 2 ni 3) : decode_text_frame
-        // renvoie None, et decode_frame doit propager ce None via `?`.
+        // renvoie une erreur, et decode_frame doit la propager via `?`.
         let frame_data = vec![9, b'H', b'i'];
-        assert!(decode_frame(b"TIT2", &frame_data).is_none());
+        assert!(matches!(
+            decode_frame(b"TIT2", &frame_data),
+            Err(Mp3Error::UnknownTextEncoding { encoding: 9 })
+        ));
     }
 
     #[test]
     fn test_decode_frame_apic() {
         let frame_data = vec![0xDE, 0xAD, 0xBE, 0xEF]; // contenu image bidon
-        let decoded = decode_frame(b"APIC", &frame_data).unwrap();
+        let decoded = decode_frame(b"APIC", &frame_data).unwrap().unwrap();
 
         match decoded {
             DecodedFrame::Image { mime_type, data } => {
@@ -515,7 +570,7 @@ mod tests {
     #[test]
     fn test_decode_frame_comm() {
         let frame_data = "Super chanson".as_bytes().to_vec();
-        let decoded = decode_frame(b"COMM", &frame_data).unwrap();
+        let decoded = decode_frame(b"COMM", &frame_data).unwrap().unwrap();
 
         match decoded {
             DecodedFrame::Comment(text) => assert_eq!(text, "Super chanson"),
@@ -526,7 +581,7 @@ mod tests {
     #[test]
     fn test_decode_frame_unknown_id() {
         let frame_data = vec![1, 2, 3, 4, 5];
-        let decoded = decode_frame(b"XXXX", &frame_data).unwrap();
+        let decoded = decode_frame(b"XXXX", &frame_data).unwrap().unwrap();
 
         match decoded {
             DecodedFrame::Unknown(data) => assert_eq!(data, frame_data),

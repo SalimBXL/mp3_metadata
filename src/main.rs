@@ -5,7 +5,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", mp3_file);
     println!("{}", mp3_file.header);
 
-    let frames = mp3_metadata::read_frames(&mp3_file.header);
+    let frames = mp3_metadata::read_frames(&mp3_file.header)?;
     for frame in &frames {
         println!("{}", frame);
     }
