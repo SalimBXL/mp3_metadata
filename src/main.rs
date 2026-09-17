@@ -1,7 +1,23 @@
 use mp3_metadata::{FrameContent, read_mp3_file};
+use std::env;
+use std::process::ExitCode;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mp3 = read_mp3_file("a_kind_of_magic.mp3")?;
+fn main() -> ExitCode {
+    let Some(path) = env::args().nth(1) else {
+        eprintln!("Usage : mp3_metadata <fichier.mp3>");
+        return ExitCode::FAILURE;
+    };
+
+    if let Err(err) = run(&path) {
+        eprintln!("Erreur : {err}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn run(path: &str) -> Result<(), mp3_metadata::Mp3Error> {
+    let mp3 = read_mp3_file(path)?;
     println!("{mp3}");
 
     let Some(tag) = &mp3.id3v2 else {
@@ -16,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Artiste : {}", tag.artist().unwrap_or("?"));
     println!("Album   : {}", tag.album().unwrap_or("?"));
     println!("Année   : {}", tag.year().unwrap_or("?"));
+
     for frame in tag.pictures() {
         if let FrameContent::Picture {
             mime_type, data, ..
@@ -25,13 +42,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("===============================");
-
-    /*
-       // Et les frames restent accessibles une par une.
-       for frame in &tag.frames {
-           println!("{frame}");
-       }
-    */
     Ok(())
 }
