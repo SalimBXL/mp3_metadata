@@ -3,12 +3,22 @@ use std::env;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let Some(path) = env::args().nth(1) else {
-        eprintln!("Usage : mp3_metadata <fichier.mp3>");
+    let mut path = None;
+    let mut verbose = false;
+
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "--verbose" | "-v" => verbose = true,
+            _ => path = Some(arg),
+        }
+    }
+
+    let Some(path) = path else {
+        eprintln!("Usage : mp3_metadata [--verbose] <fichier.mp3>");
         return ExitCode::FAILURE;
     };
 
-    if let Err(err) = run(&path) {
+    if let Err(err) = run(&path, verbose) {
         eprintln!("Erreur : {err}");
         return ExitCode::FAILURE;
     }
@@ -16,7 +26,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(path: &str) -> Result<(), mp3_metadata::Mp3Error> {
+fn run(path: &str, verbose: bool) -> Result<(), mp3_metadata::Mp3Error> {
     let mp3 = read_mp3_file(path)?;
     println!("{mp3}");
 
@@ -39,6 +49,12 @@ fn run(path: &str) -> Result<(), mp3_metadata::Mp3Error> {
         } = &frame.content
         {
             println!("Pochette : {mime_type}, {} octets", data.len());
+        }
+    }
+
+    if verbose {
+        for frame in &tag.frames {
+            println!("{frame}");
         }
     }
 
