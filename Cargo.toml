@@ -5,3 +5,12 @@ edition = "2024"
 
 [dependencies]
 tempfile = "3.27.0"
+ureq = { version = "2", features = ["json"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = ["verify"]
+# Recherche en ligne (MusicBrainz) pour vérifier les métadonnées d'un tag.
+# Optionnelle pour que la librairie de parsing seule (sans réseau ni TLS)
+# reste utilisable avec `default-features = false`.
+verify = ["dep:ureq", "dep:serde"]
