@@ -547,38 +547,71 @@ mod tests {
 
     // ----- read_tag : unsynchronisation -----
 
+    /// Applique l'unsynchronisation en sens écriture : insère un octet nul
+    /// après chaque `0xFF`. C'est l'inverse de `deunsynchronize`, utilisé
+    /// ici pour simuler ce qu'un encodeur écrirait réellement sur disque.
+    fn stuff_for_test(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len());
+        for &byte in data {
+            out.push(byte);
+            if byte == 0xFF {
+                out.push(0x00);
+            }
+        }
+        out
+    }
+
     #[test]
     fn test_read_tag_removes_unsynchronisation_before_parsing_frames() {
-        // On construit une frame normale, puis on lui injecte une paire
-        // 0xFF 0x00 dans son corps texte : sans retrait de
-        // l'unsynchronisation, le décodage UTF-8 échouerait ou le contenu
-        // serait faux.
-        let mut body = vec![3]; // encoding UTF-8
-        body.extend_from_slice(&[0xFF, 0x00, b'A']); // 0xFF 0x00 -> 0xFF après retrait
-        let frame = build_frame_bytes(b"TIT2", &body);
+        // Contenu réel de la frame (celui qu'on doit retrouver après
+        // lecture) : encoding Latin-1 (tout octet y est une valeur
+        // valide), puis un octet 0xFF suivi de 'A'. La taille déclarée
+        // dans l'en-tête de frame porte sur CE contenu, pas sur sa forme
+        // bourrée : c'est la taille "avant unsynchronisation" que décrit
+        // la spécification.
+        let true_content = [0u8, 0xFF, b'A'];
+        let mut frame = Vec::new();
+        frame.extend_from_slice(b"TIT2");
+        frame.extend_from_slice(&(true_content.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&true_content);
 
-        let data = build_tag_bytes(3, 0, UNSYNCHRONISATION_FLAG, &frame);
+        // Ce qu'un encodeur écrirait réellement : la séquence complète
+        // (en-tête de frame compris), avec un 0x00 inséré après le 0xFF.
+        let stuffed = stuff_for_test(&frame);
+        assert_eq!(stuffed.len(), frame.len() + 1); // une seule paire à protéger
+
+        let data = build_tag_bytes(3, 0, UNSYNCHRONISATION_FLAG, &stuffed);
         let tag = read_tag(&data).unwrap().unwrap();
 
-        // Une fois l'unsynchronisation retirée, le texte contient l'octet
-        // 0xFF seul, qui n'est pas un point de code UTF-8 valide en tête
-        // de séquence : le test vérifie donc simplement que le tag entier
-        // se lit sans erreur de troncature liée à l'octet fantôme.
         assert_eq!(tag.frames.len(), 1);
+        // 0xFF en Latin-1 est U+00FF.
+        assert_eq!(tag.title(), Some("\u{FF}A"));
     }
 
     #[test]
     fn test_read_tag_unsynchronisation_flag_off_keeps_stuffed_zero() {
-        // Même construction, mais sans le flag : le 0x00 injecté est
-        // conservé tel quel dans le flux, et compte dans la taille lue.
-        let mut body = vec![3];
+        // Sans le flag, aucune transformation n'est appliquée : les octets
+        // sont pris tels quels, 0xFF 0x00 compris. Encoding Latin-1, pour
+        // que 0xFF soit une valeur de caractère valide plutôt qu'une
+        // erreur de validation UTF-8 sans rapport avec ce qui est testé.
+        let mut body = vec![0];
         body.extend_from_slice(&[b'A', 0xFF, 0x00, b'B']);
         let frame = build_frame_bytes(b"TIT2", &body);
-        let data = build_tag_bytes(3, 0, 0, &frame);
+        let data = build_tag_bytes(3, 0, 0, &frame); // pas de flag d'unsync
 
         let tag = read_tag(&data).unwrap().unwrap();
+
         assert_eq!(tag.frames.len(), 1);
         assert_eq!(tag.frames[0].size, body.len() as u32);
+        // Le 0x00 injecté agit comme un terminateur normal et scinde le
+        // texte en deux valeurs : si `deunsynchronize` s'était appliqué à
+        // tort malgré l'absence du flag, ce 0x00 aurait disparu et les
+        // deux valeurs auraient fusionné en une seule.
+        assert_eq!(
+            tag.frame(b"TIT2").unwrap().content,
+            FrameContent::Text(vec!["A\u{FF}".to_string(), "B".to_string()])
+        );
     }
 
     // ----- read_tag : extended header -----
