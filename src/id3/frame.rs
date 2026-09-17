@@ -489,7 +489,8 @@ fn decode_text_values(frame_data: &[u8]) -> Result<Vec<String>, Mp3Error> {
 fn split_at_terminator(encoding: u8, data: &[u8]) -> Option<(&[u8], &[u8])> {
     match encoding {
         1 | 2 => {
-            let index = data.chunks_exact(2).position(|pair| pair == [0, 0])? * 2;
+            let (pairs, _) = data.as_chunks::<2>();
+            let index = pairs.iter().position(|&pair| pair == [0, 0])? * 2;
             Some((&data[..index], &data[index + 2..]))
         }
         _ => {
@@ -552,10 +553,10 @@ fn decode_string(encoding: u8, data: &[u8]) -> Result<String, Mp3Error> {
 
 /// Assemble des paires d'octets en unités UTF-16 puis en chaîne.
 fn decode_utf16(data: &[u8], little_endian: bool, encoding: u8) -> Result<String, Mp3Error> {
-    let units: Vec<u16> = data
-        .chunks_exact(2)
-        .map(|pair| {
-            let pair = [pair[0], pair[1]];
+    let (pairs, _) = data.as_chunks::<2>();
+    let units: Vec<u16> = pairs
+        .iter()
+        .map(|&pair| {
             if little_endian {
                 u16::from_le_bytes(pair)
             } else {
