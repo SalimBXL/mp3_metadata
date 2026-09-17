@@ -5,20 +5,22 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let mut path = None;
     let mut verbose = false;
+    let mut verify = false;
 
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "--verbose" | "-v" => verbose = true,
+            "--verify" => verify = true,
             _ => path = Some(arg),
         }
     }
 
     let Some(path) = path else {
-        eprintln!("Usage : mp3_metadata [--verbose] <fichier.mp3>");
+        eprintln!("Usage : mp3_metadata [--verbose] [--verify] <fichier.mp3>");
         return ExitCode::FAILURE;
     };
 
-    if let Err(err) = run(&path, verbose) {
+    if let Err(err) = run(&path, verbose, verify) {
         eprintln!("Erreur : {err}");
         return ExitCode::FAILURE;
     }
@@ -26,7 +28,7 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(path: &str, verbose: bool) -> Result<(), mp3_metadata::Mp3Error> {
+fn run(path: &str, verbose: bool, verify: bool) -> Result<(), mp3_metadata::Mp3Error> {
     let mp3 = read_mp3_file(path)?;
     println!("{mp3}");
 
@@ -56,6 +58,19 @@ fn run(path: &str, verbose: bool) -> Result<(), mp3_metadata::Mp3Error> {
         for frame in &tag.frames {
             println!("{frame}");
         }
+    }
+
+    if verify {
+        // Un échec de vérification (pas de réseau, aucun résultat...)
+        // n'invalide pas le reste : le tag local a bien été lu, seul le
+        // contrôle en ligne n'a pas abouti.
+        #[cfg(feature = "verify")]
+        match mp3_metadata::verify::verify_tag(tag) {
+            Ok(report) => println!("{report}"),
+            Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
+        }
+        #[cfg(not(feature = "verify"))]
+        eprintln!("Compilé sans la fonctionnalité 'verify' (voir Cargo.toml)");
     }
 
     Ok(())

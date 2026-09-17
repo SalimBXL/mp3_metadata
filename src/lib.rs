@@ -1,5 +1,7 @@
 mod error;
 mod id3;
+#[cfg(feature = "verify")]
+pub mod verify;
 
 pub use error::Mp3Error;
 pub use id3::frame::{Frame, FrameContent};
