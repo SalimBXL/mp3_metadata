@@ -12,9 +12,18 @@ pub enum Mp3Error {
     TooSmall {
         len: usize,
     },
-    MissingId3Tag,
     InvalidTagSize {
         declared: u32,
+        available: usize,
+    },
+    /// Version majeure d'ID3v2 non prise en charge (uniquement 2, 3 et 4
+    /// sont gérées).
+    UnsupportedVersion {
+        major: u8,
+    },
+    /// L'extended header déclaré dans les flags de l'en-tête principal ne
+    /// tient pas dans les octets disponibles.
+    ExtendedHeaderTooShort {
         available: usize,
     },
     FrameTooShort {
@@ -57,9 +66,6 @@ impl fmt::Display for Mp3Error {
                     "Fichier trop petit pour contenir un en-tête ID3v2 ({len} octets, 10 requis)"
                 )
             }
-            Mp3Error::MissingId3Tag => {
-                write!(f, "Pas de tag ID3v2 au début du fichier")
-            }
             Mp3Error::InvalidTagSize {
                 declared,
                 available,
@@ -67,6 +73,15 @@ impl fmt::Display for Mp3Error {
                 write!(
                     f,
                     "Taille du tag ID3v2 invalide : {declared} octets, mais seulement {available} octets dans le fichier"
+                )
+            }
+            Mp3Error::UnsupportedVersion { major } => {
+                write!(f, "Version ID3v2.{major} non prise en charge")
+            }
+            Mp3Error::ExtendedHeaderTooShort { available } => {
+                write!(
+                    f,
+                    "Extended header ID3v2 tronqué : seulement {available} octets disponibles"
                 )
             }
             Mp3Error::FrameTooShort { offset } => {

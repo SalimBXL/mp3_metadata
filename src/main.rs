@@ -1,19 +1,37 @@
+use mp3_metadata::{FrameContent, read_mp3_file};
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mp3_filename = "a_kind_of_magic.mp3";
-    let mp3_file = mp3_metadata::read_mp3_file(mp3_filename)?;
+    let mp3 = read_mp3_file("a_kind_of_magic.mp3")?;
+    println!("{mp3}");
 
-    println!("{}", mp3_file);
-
-    if let Some(id3v2) = &mp3_file.id3v2 {
-        println!("{}", id3v2);
-
-        let frames = mp3_metadata::read_frames(id3v2)?;
-        for frame in &frames {
-            println!("{}", frame);
-        }
-    } else {
+    let Some(tag) = &mp3.id3v2 else {
         println!("Pas de tag ID3v2");
+        return Ok(());
+    };
+
+    println!("{tag}");
+
+    // Les accesseurs donnent directement les métadonnées usuelles.
+    println!("Titre   : {}", tag.title().unwrap_or("?"));
+    println!("Artiste : {}", tag.artist().unwrap_or("?"));
+    println!("Album   : {}", tag.album().unwrap_or("?"));
+    println!("Année   : {}", tag.year().unwrap_or("?"));
+    for frame in tag.pictures() {
+        if let FrameContent::Picture {
+            mime_type, data, ..
+        } = &frame.content
+        {
+            println!("Pochette : {mime_type}, {} octets", data.len());
+        }
     }
 
+    println!("===============================");
+
+    /*
+       // Et les frames restent accessibles une par une.
+       for frame in &tag.frames {
+           println!("{frame}");
+       }
+    */
     Ok(())
 }
