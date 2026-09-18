@@ -66,7 +66,11 @@ fn run(path: &str, verbose: bool, verify: bool) -> Result<(), mp3_metadata::Mp3E
         // contrôle en ligne n'a pas abouti.
         #[cfg(feature = "verify")]
         match mp3_metadata::verify::verify_tag(tag) {
-            Ok(report) => println!("{report}"),
+            Ok(reports) => {
+                for report in reports {
+                    println!("{report}");
+                }
+            }
             Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
         }
         #[cfg(not(feature = "verify"))]

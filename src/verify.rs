@@ -18,10 +18,19 @@
 //!   la syntaxe Lucene (`+ - && || ! ( ) { } [ ] ^ ~ * ? : \`). Un titre
 //!   contenant l'un de ces caractères peut donner une requête mal formée
 //!   et donc [`VerifyError::NoMatch`] plutôt qu'une vraie erreur réseau.
+//! - Un même titre correspond souvent à plusieurs enregistrements
+//!   MusicBrainz distincts (version studio, live, remaster, session
+//!   radio...), avec un score de pertinence textuelle identique entre
+//!   eux. [`verify_tag`] ne tranche pas seul entre eux : il renvoie un
+//!   rapport par candidat à égalité de score (voir
+//!   [`top_scored_recordings`]), à charge pour l'appelant de choisir.
 //! - Un enregistrement MusicBrainz peut être associé à plusieurs éditions
 //!   (`releases`), chacune avec son propre titre d'album et sa propre
-//!   date. Seule la première de la liste renvoyée par l'API sert de
-//!   référence pour comparer l'album et l'année.
+//!   date — un morceau souvent réédité peut en avoir des dizaines.
+//!   [`best_matching_release`] retient celle dont le titre correspond à
+//!   l'album du tag local s'il y en a une, et ne retombe sur la première
+//!   de la liste qu'à défaut (ou si le tag local n'a pas d'album) : rien
+//!   ne garantit alors sa pertinence.
 //!
 //! # Étiquette de l'API
 //!
@@ -165,6 +174,11 @@ impl fmt::Display for VerificationReport {
 
         writeln!(f, "- VÉRIFICATION MUSICBRAINZ -----")?;
         writeln!(f, "Enregistrement : {} (score {score})", self.recording_id)?;
+        writeln!(
+            f,
+            "Lien           : https://musicbrainz.org/recording/{}",
+            self.recording_id
+        )?;
         writeln!(f, "Titre   : {}", self.title)?;
         writeln!(f, "Artiste : {}", self.artist)?;
         if let Some(album) = &self.album {
@@ -181,8 +195,9 @@ impl fmt::Display for VerificationReport {
 /// MusicBrainz.
 ///
 /// Cherche par titre et/ou artiste (au moins l'un des deux doit être
-/// présent dans le tag local), retient l'enregistrement le mieux noté
-/// parmi les résultats, et compare ses champs à ceux du tag local.
+/// présent dans le tag local) et renvoie un rapport par enregistrement
+/// candidat parmi les mieux notés — voir [`top_scored_recordings`].
+/// S'il n'y en a qu'un, le `Vec` renvoyé n'a qu'un élément.
 ///
 /// # Erreurs
 ///
@@ -193,7 +208,7 @@ impl fmt::Display for VerificationReport {
 /// - [`VerifyError::Response`] si le corps de la réponse ne peut pas être
 ///   lu dans la forme JSON attendue.
 /// - [`VerifyError::NoMatch`] si la recherche ne renvoie aucun résultat.
-pub fn verify_tag(tag: &Id3v2Tag) -> Result<VerificationReport, VerifyError> {
+pub fn verify_tag(tag: &Id3v2Tag) -> Result<Vec<VerificationReport>, VerifyError> {
     let title = tag.title();
     let artist = tag.artist();
 
@@ -211,15 +226,35 @@ pub fn verify_tag(tag: &Id3v2Tag) -> Result<VerificationReport, VerifyError> {
         .call()?
         .into_json()?;
 
-    // Le score de pertinence est normalement déjà décroissant dans la
-    // réponse, mais on ne s'y fie pas : on prend explicitement le meilleur.
-    let best = response
-        .recordings
-        .into_iter()
-        .max_by_key(|recording| recording.score.unwrap_or(0))
-        .ok_or(VerifyError::NoMatch)?;
+    let candidates = top_scored_recordings(&response.recordings);
+    if candidates.is_empty() {
+        return Err(VerifyError::NoMatch);
+    }
 
-    Ok(build_report(tag, &best))
+    Ok(candidates
+        .into_iter()
+        .map(|recording| build_report(tag, recording))
+        .collect())
+}
+
+/// Retient, parmi les enregistrements renvoyés par la recherche, tous
+/// ceux qui partagent le score de pertinence maximal.
+///
+/// Un même titre correspond souvent à plusieurs enregistrements
+/// MusicBrainz distincts — version studio, live, remaster, session radio
+/// — tous avec le même score de pertinence textuelle (titre/artiste), que
+/// MusicBrainz ne départage pas plus finement. Plutôt que d'en choisir un
+/// seul arbitrairement, on les renvoie tous : c'est à l'appelant de
+/// trancher.
+fn top_scored_recordings(recordings: &[RemoteRecording]) -> Vec<&RemoteRecording> {
+    let top_score = recordings
+        .iter()
+        .filter_map(|recording| recording.score)
+        .max();
+    recordings
+        .iter()
+        .filter(|recording| recording.score == top_score)
+        .collect()
 }
 
 /// Construit la requête Lucene envoyée à MusicBrainz à partir du titre
@@ -244,18 +279,76 @@ fn quote_lucene(value: &str) -> String {
 }
 
 fn build_report(tag: &Id3v2Tag, remote: &RemoteRecording) -> VerificationReport {
-    let first_release = remote.releases.first();
+    let release = best_matching_release(tag, &remote.releases);
 
     VerificationReport {
         recording_id: remote.id.clone(),
         score: remote.score,
         title: compare_field(tag.title(), &remote.title),
         artist: compare_field(tag.artist(), &remote.artist()),
-        album: first_release.map(|release| compare_field(tag.album(), &release.title)),
-        year: first_release
+        album: release.map(|release| compare_field(tag.album(), &release.title)),
+        year: release
             .and_then(|release| release.date.as_deref())
             .map(|date| compare_field(tag.year(), release_year(date))),
     }
+}
+
+/// Choisit l'édition la plus pertinente pour comparer l'album et l'année.
+///
+/// Une égalité stricte échoue trop souvent en pratique : MusicBrainz et un
+/// tag local ne nomment pas toujours une édition de la même façon (ex.
+/// `"Greatest Hits Vol.2"` localement contre `"Greatest Hits II"` chez
+/// MusicBrainz — aucun des deux n'est faux, ce sont deux conventions de
+/// nommage différentes pour la même édition). On compare donc les deux
+/// titres par recouvrement de mots (voir [`word_overlap`]) et on retient
+/// l'édition avec le plus grand recouvrement, à condition qu'il soit non
+/// nul. Sans album local, sans mot en commun avec aucune édition, ou sans
+/// édition du tout, on retombe sur la première renvoyée par l'API — sans
+/// garantie de pertinence dans ce cas.
+fn best_matching_release<'a>(
+    tag: &Id3v2Tag,
+    releases: &'a [RemoteRelease],
+) -> Option<&'a RemoteRelease> {
+    let Some(local_album) = tag.album() else {
+        return releases.first();
+    };
+
+    let local_words = normalize_words(local_album);
+    if local_words.is_empty() {
+        return releases.first();
+    }
+
+    releases
+        .iter()
+        .map(|release| {
+            (
+                release,
+                word_overlap(&local_words, &normalize_words(&release.title)),
+            )
+        })
+        .max_by_key(|(_, score)| *score)
+        .filter(|(_, score)| *score > 0)
+        .map(|(release, _)| release)
+        .or_else(|| releases.first())
+}
+
+/// Découpe une chaîne en mots alphanumériques, en minuscules ASCII (même
+/// limite que [`compare_field`] : les accents ne sont pas repliés).
+fn normalize_words(s: &str) -> std::collections::HashSet<String> {
+    s.to_ascii_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Nombre de mots communs entre deux ensembles déjà normalisés par
+/// [`normalize_words`].
+fn word_overlap(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> usize {
+    a.intersection(b).count()
 }
 
 /// Extrait l'année d'une date MusicBrainz (`"1991-05-27"`, `"1991-05"` ou
@@ -514,5 +607,173 @@ mod tests {
 
         assert_eq!(report.album, None);
         assert_eq!(report.year, None);
+    }
+
+    // ----- normalize_words / word_overlap -----
+
+    #[test]
+    fn test_normalize_words_splits_on_punctuation_and_lowercases() {
+        assert_eq!(
+            normalize_words("Greatest Hits Vol.2"),
+            ["greatest", "hits", "vol", "2"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+    }
+
+    #[test]
+    fn test_normalize_words_empty_for_punctuation_only() {
+        assert!(normalize_words("...").is_empty());
+    }
+
+    #[test]
+    fn test_word_overlap_counts_shared_words() {
+        let a = normalize_words("Greatest Hits Vol.2");
+        let b = normalize_words("Greatest Hits II");
+        assert_eq!(word_overlap(&a, &b), 2); // "greatest", "hits"
+    }
+
+    #[test]
+    fn test_word_overlap_zero_when_unrelated() {
+        let a = normalize_words("Greatest Hits Vol.2");
+        let b = normalize_words("Big in Japan");
+        assert_eq!(word_overlap(&a, &b), 0);
+    }
+
+    // ----- top_scored_recordings -----
+
+    fn recording(id: &str, score: u32, release_title: &str) -> RemoteRecording {
+        RemoteRecording {
+            id: id.to_string(),
+            score: Some(score),
+            title: "A Kind of Magic".to_string(),
+            artist_credit: vec![ArtistCredit {
+                name: "Queen".to_string(),
+            }],
+            releases: vec![RemoteRelease {
+                title: release_title.to_string(),
+                date: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_top_scored_recordings_returns_all_tied_at_max() {
+        // Cas concret : une version studio et une version live à égalité
+        // de score — les deux doivent ressortir, pas une seule.
+        let live = recording("live", 100, "On Air");
+        let studio = recording("studio", 100, "Greatest Hits II");
+        let cover_band = recording("cover", 60, "Tribute Album");
+        let recordings = [live, studio, cover_band];
+
+        let top = top_scored_recordings(&recordings);
+
+        assert_eq!(top.len(), 2);
+        assert!(top.iter().any(|r| r.id == "live"));
+        assert!(top.iter().any(|r| r.id == "studio"));
+    }
+
+    #[test]
+    fn test_top_scored_recordings_single_winner() {
+        let a = recording("a", 100, "On Air");
+        let b = recording("b", 80, "Greatest Hits II");
+        let recordings = [a, b];
+
+        let top = top_scored_recordings(&recordings);
+
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].id, "a");
+    }
+
+    #[test]
+    fn test_top_scored_recordings_empty_input() {
+        assert!(top_scored_recordings(&[]).is_empty());
+    }
+
+    // ----- best_matching_release -----
+
+    fn releases_greatest_hits_ii_and_big_in_japan() -> Vec<RemoteRelease> {
+        vec![
+            RemoteRelease {
+                title: "Big in Japan".to_string(),
+                date: Some("1994-05-01".to_string()),
+            },
+            RemoteRelease {
+                title: "Greatest Hits II".to_string(),
+                date: Some("1991-10-28".to_string()),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_best_matching_release_exact_match_wins() {
+        let tag = sample_local_tag(&[(b"TALB", "Greatest Hits II")]);
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Greatest Hits II");
+        assert_eq!(release.date.as_deref(), Some("1991-10-28"));
+    }
+
+    #[test]
+    fn test_best_matching_release_finds_overlap_despite_different_naming() {
+        // Régression concrète : le tag local dit "Greatest Hits Vol.2",
+        // MusicBrainz dit "Greatest Hits II" — aucune correspondance
+        // exacte, mais un net recouvrement ("greatest", "hits") face à
+        // zéro recouvrement avec "Big in Japan".
+        let tag = sample_local_tag(&[(b"TALB", "Greatest Hits Vol.2")]);
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Greatest Hits II");
+    }
+
+    #[test]
+    fn test_best_matching_release_match_is_ascii_case_insensitive() {
+        let tag = sample_local_tag(&[(b"TALB", "greatest hits vol.2")]);
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Greatest Hits II");
+    }
+
+    #[test]
+    fn test_best_matching_release_falls_back_to_first_when_no_word_overlap() {
+        let tag = sample_local_tag(&[(b"TALB", "Something Else Entirely")]);
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Big in Japan"); // la première, faute de mieux
+    }
+
+    #[test]
+    fn test_best_matching_release_falls_back_to_first_when_local_has_no_album() {
+        let tag = sample_local_tag(&[(b"TIT2", "A Kind of Magic")]); // pas de TALB
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Big in Japan");
+    }
+
+    #[test]
+    fn test_best_matching_release_falls_back_to_first_when_local_album_is_only_punctuation() {
+        let tag = sample_local_tag(&[(b"TALB", "...")]);
+        let releases = releases_greatest_hits_ii_and_big_in_japan();
+
+        let release = best_matching_release(&tag, &releases).unwrap();
+
+        assert_eq!(release.title, "Big in Japan");
+    }
+
+    #[test]
+    fn test_best_matching_release_none_when_no_releases() {
+        let tag = sample_local_tag(&[(b"TALB", "Greatest Hits II")]);
+        assert!(best_matching_release(&tag, &[]).is_none());
     }
 }
