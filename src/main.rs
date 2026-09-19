@@ -117,11 +117,7 @@ fn print_frames(tag: &Id3v2Tag) {
 fn print_verification(tag: &Id3v2Tag) {
     #[cfg(feature = "verify")]
     match mp3_metadata::verify::verify_tag(tag) {
-        Ok(reports) => {
-            for report in reports {
-                println!("{report}");
-            }
-        }
+        Ok(reports) => print!("{}", mp3_metadata::verify::VerificationTable(&reports)),
         Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
     }
     #[cfg(not(feature = "verify"))]

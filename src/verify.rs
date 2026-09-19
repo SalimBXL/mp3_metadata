@@ -148,6 +148,20 @@ impl fmt::Display for FieldMatch {
     }
 }
 
+impl FieldMatch {
+    /// Représentation compacte pour une cellule de [`VerificationTable`] :
+    /// une simple coche en cas de concordance (la valeur locale est déjà
+    /// visible ailleurs), sinon la valeur MusicBrainz précédée d'un
+    /// symbole.
+    fn cell(&self) -> String {
+        match self {
+            FieldMatch::Match => "✓".to_string(),
+            FieldMatch::Mismatch { remote } => format!("✗ {remote}"),
+            FieldMatch::LocalMissing { remote } => format!("· {remote}"),
+        }
+    }
+}
+
 /// Résultat de la vérification d'un tag auprès de MusicBrainz : l'
 /// enregistrement retenu, et la comparaison champ par champ.
 #[derive(Debug, Clone)]
@@ -188,6 +202,96 @@ impl fmt::Display for VerificationReport {
             writeln!(f, "Année   : {year}")?;
         }
         write!(f, "-------------------------------")
+    }
+}
+
+/// Vue tabulaire de plusieurs rapports de vérification : une ligne par
+/// enregistrement candidat, une colonne par champ comparé.
+///
+/// Plus lisible que plusieurs [`VerificationReport`] affichés à la suite
+/// quand MusicBrainz renvoie plusieurs candidats à égalité de score (voir
+/// [`verify_tag`]) — les colonnes s'alignent, les différences sautent aux
+/// yeux. Les liens MusicBrainz, trop longs pour tenir dans une colonne,
+/// sont listés séparément après le tableau.
+pub struct VerificationTable<'a>(pub &'a [VerificationReport]);
+
+impl fmt::Display for VerificationTable<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reports = self.0;
+        if reports.is_empty() {
+            return Ok(());
+        }
+
+        let headers = ["#", "Score", "Titre", "Artiste", "Album", "Année"];
+        let rows: Vec<[String; 6]> = reports
+            .iter()
+            .enumerate()
+            .map(|(index, report)| {
+                [
+                    (index + 1).to_string(),
+                    report
+                        .score
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    report.title.cell(),
+                    report.artist.cell(),
+                    report
+                        .album
+                        .as_ref()
+                        .map(FieldMatch::cell)
+                        .unwrap_or_else(|| "—".to_string()),
+                    report
+                        .year
+                        .as_ref()
+                        .map(FieldMatch::cell)
+                        .unwrap_or_else(|| "—".to_string()),
+                ]
+            })
+            .collect();
+
+        // Largeur de chaque colonne = la plus longue valeur qu'elle
+        // contient, en-tête compris. Compté en caractères (`chars`), pas
+        // en octets : les accents et les symboles ✓/✗/· tiennent sur
+        // plusieurs octets en UTF-8 mais un seul caractère affiché.
+        let widths: Vec<usize> = (0..headers.len())
+            .map(|col| {
+                rows.iter()
+                    .map(|row| row[col].chars().count())
+                    .chain(std::iter::once(headers[col].chars().count()))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        for (col, header) in headers.iter().enumerate() {
+            write!(f, "{header:<width$}  ", width = widths[col])?;
+        }
+        writeln!(f)?;
+
+        for &width in &widths {
+            write!(f, "{}  ", "-".repeat(width))?;
+        }
+        writeln!(f)?;
+
+        for row in &rows {
+            for (col, cell) in row.iter().enumerate() {
+                write!(f, "{cell:<width$}  ", width = widths[col])?;
+            }
+            writeln!(f)?;
+        }
+
+        writeln!(f)?;
+        writeln!(f, "Liens :")?;
+        for (index, report) in reports.iter().enumerate() {
+            writeln!(
+                f,
+                "{:>2}. https://musicbrainz.org/recording/{}",
+                index + 1,
+                report.recording_id
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -429,6 +533,35 @@ mod tests {
     use super::*;
     use crate::id3::frame::{Frame, FrameContent};
     use crate::id3::header::Id3Version;
+
+    // ----- FieldMatch::cell -----
+
+    #[test]
+    fn test_field_match_cell_match_is_a_checkmark() {
+        assert_eq!(FieldMatch::Match.cell(), "✓");
+    }
+
+    #[test]
+    fn test_field_match_cell_mismatch_shows_remote_value() {
+        assert_eq!(
+            FieldMatch::Mismatch {
+                remote: "Nihon".to_string()
+            }
+            .cell(),
+            "✗ Nihon"
+        );
+    }
+
+    #[test]
+    fn test_field_match_cell_local_missing_shows_remote_value() {
+        assert_eq!(
+            FieldMatch::LocalMissing {
+                remote: "Nihon".to_string()
+            }
+            .cell(),
+            "· Nihon"
+        );
+    }
 
     // ----- quote_lucene / build_query -----
 
@@ -775,5 +908,76 @@ mod tests {
     fn test_best_matching_release_none_when_no_releases() {
         let tag = sample_local_tag(&[(b"TALB", "Greatest Hits II")]);
         assert!(best_matching_release(&tag, &[]).is_none());
+    }
+
+    // ----- VerificationTable -----
+
+    fn sample_report(recording_id: &str, album_remote: &str) -> VerificationReport {
+        VerificationReport {
+            recording_id: recording_id.to_string(),
+            score: Some(100),
+            title: FieldMatch::Match,
+            artist: FieldMatch::Match,
+            album: Some(FieldMatch::Mismatch {
+                remote: album_remote.to_string(),
+            }),
+            year: Some(FieldMatch::Match),
+        }
+    }
+
+    #[test]
+    fn test_verification_table_empty_is_empty_string() {
+        assert_eq!(VerificationTable(&[]).to_string(), "");
+    }
+
+    /// Position, en nombre de *caractères* (pas d'octets — ✓/✗/· sont
+    /// multi-octets en UTF-8, ce qui fausserait la comparaison entre deux
+    /// chaînes n'en contenant pas le même nombre avant le point cherché).
+    fn char_index_of(haystack: &str, needle: &str) -> Option<usize> {
+        let byte_index = haystack.find(needle)?;
+        Some(haystack[..byte_index].chars().count())
+    }
+
+    #[test]
+    fn test_verification_table_header_and_row_columns_align() {
+        let reports = [sample_report("abc-123", "Nihon")];
+        let table = VerificationTable(&reports).to_string();
+        let mut lines = table.lines();
+
+        let header = lines.next().unwrap();
+        let separator = lines.next().unwrap();
+        let row = lines.next().unwrap();
+
+        // Chaque colonne d'en-tête doit démarrer exactement à la même
+        // position que la colonne correspondante de la ligne de données,
+        // et le séparateur doit avoir la même longueur que l'en-tête.
+        assert_eq!(
+            char_index_of(header, "Album"),
+            char_index_of(row, "✗ Nihon")
+        );
+        assert_eq!(header.chars().count(), separator.chars().count());
+    }
+
+    #[test]
+    fn test_verification_table_contains_one_link_per_report() {
+        let reports = [
+            sample_report("abc-123", "Nihon"),
+            sample_report("def-456", "On Air"),
+        ];
+        let table = VerificationTable(&reports).to_string();
+
+        assert!(table.contains("https://musicbrainz.org/recording/abc-123"));
+        assert!(table.contains("https://musicbrainz.org/recording/def-456"));
+    }
+
+    #[test]
+    fn test_verification_table_missing_album_shows_dash() {
+        let mut report = sample_report("abc-123", "Nihon");
+        report.album = None;
+        let reports = [report];
+
+        let table = VerificationTable(&reports).to_string();
+
+        assert!(table.lines().nth(2).unwrap().contains('—'));
     }
 }
