@@ -20,10 +20,10 @@
 //!   et donc [`VerifyError::NoMatch`] plutôt qu'une vraie erreur réseau.
 //! - Un même titre correspond souvent à plusieurs enregistrements
 //!   MusicBrainz distincts (version studio, live, remaster, session
-//!   radio...), avec un score de pertinence textuelle identique entre
-//!   eux. [`verify_tag`] ne tranche pas seul entre eux : il renvoie un
-//!   rapport par candidat à égalité de score (voir
-//!   [`top_scored_recordings`]), à charge pour l'appelant de choisir.
+//!   radio...), parfois avec un score de pertinence textuelle identique
+//!   entre eux. [`verify_tag`] ne tranche pas seul entre eux : il renvoie
+//!   un rapport par candidat renvoyé par la recherche (jusqu'à 10), triés
+//!   — voir [`sort_recordings`] — à charge pour l'appelant de choisir.
 //! - Un enregistrement MusicBrainz peut être associé à plusieurs éditions
 //!   (`releases`), chacune avec son propre titre d'album et sa propre
 //!   date — un morceau souvent réédité peut en avoir des dizaines.
@@ -300,8 +300,9 @@ impl fmt::Display for VerificationTable<'_> {
 ///
 /// Cherche par titre et/ou artiste (au moins l'un des deux doit être
 /// présent dans le tag local) et renvoie un rapport par enregistrement
-/// candidat parmi les mieux notés — voir [`top_scored_recordings`].
-/// S'il n'y en a qu'un, le `Vec` renvoyé n'a qu'un élément.
+/// candidat renvoyé par la recherche (jusqu'à 10), trié — voir
+/// [`sort_recordings`]. S'il n'y en a qu'un, le `Vec` renvoyé n'a qu'un
+/// élément.
 ///
 /// # Erreurs
 ///
@@ -326,39 +327,61 @@ pub fn verify_tag(tag: &Id3v2Tag) -> Result<Vec<VerificationReport>, VerifyError
         .set("User-Agent", USER_AGENT)
         .query("query", &query)
         .query("fmt", "json")
-        .query("limit", "5")
+        .query("limit", "10")
         .call()?
         .into_json()?;
 
-    let candidates = top_scored_recordings(&response.recordings);
-    if candidates.is_empty() {
+    let mut recordings = response.recordings;
+    if recordings.is_empty() {
         return Err(VerifyError::NoMatch);
     }
 
-    Ok(candidates
-        .into_iter()
+    sort_recordings(tag, &mut recordings);
+
+    Ok(recordings
+        .iter()
         .map(|recording| build_report(tag, recording))
         .collect())
 }
 
-/// Retient, parmi les enregistrements renvoyés par la recherche, tous
-/// ceux qui partagent le score de pertinence maximal.
-///
-/// Un même titre correspond souvent à plusieurs enregistrements
-/// MusicBrainz distincts — version studio, live, remaster, session radio
-/// — tous avec le même score de pertinence textuelle (titre/artiste), que
-/// MusicBrainz ne départage pas plus finement. Plutôt que d'en choisir un
-/// seul arbitrairement, on les renvoie tous : c'est à l'appelant de
-/// trancher.
-fn top_scored_recordings(recordings: &[RemoteRecording]) -> Vec<&RemoteRecording> {
-    let top_score = recordings
-        .iter()
-        .filter_map(|recording| recording.score)
-        .max();
-    recordings
-        .iter()
-        .filter(|recording| recording.score == top_score)
-        .collect()
+/// Trie les enregistrements renvoyés par la recherche : score de
+/// pertinence MusicBrainz décroissant en clé principale, puis — pour
+/// départager les égalités de score de façon stable et prévisible plutôt
+/// qu'arbitrairement (un même titre correspond souvent à plusieurs
+/// enregistrements distincts : version studio, live, remaster, session
+/// radio...) — artiste, titre, année et album en ordre alphabétique
+/// croissant. L'année et l'album considérés sont ceux de l'édition
+/// choisie par [`best_matching_release`] pour cet enregistrement — la même
+/// que celle utilisée pour construire son [`VerificationReport`], pour que
+/// le tri et l'affichage restent cohérents entre eux.
+fn sort_recordings(tag: &Id3v2Tag, recordings: &mut [RemoteRecording]) {
+    recordings.sort_by_key(|recording| recording_sort_key(tag, recording));
+}
+
+/// Clé de tri d'un enregistrement — voir [`sort_recordings`]. Le score est
+/// enveloppé dans [`std::cmp::Reverse`] pour trier décroissant tout en
+/// gardant les autres champs croissants dans le même tuple.
+fn recording_sort_key(
+    tag: &Id3v2Tag,
+    recording: &RemoteRecording,
+) -> (std::cmp::Reverse<u32>, String, String, String, String) {
+    let release = best_matching_release(tag, &recording.releases);
+    let year = release
+        .and_then(|release| release.date.as_deref())
+        .map(release_year)
+        .unwrap_or("")
+        .to_string();
+    let album = release
+        .map(|release| release.title.clone())
+        .unwrap_or_default();
+
+    (
+        std::cmp::Reverse(recording.score.unwrap_or(0)),
+        recording.artist(),
+        recording.title.clone(),
+        year,
+        album,
+    )
 }
 
 /// Construit la requête Lucene envoyée à MusicBrainz à partir du titre
@@ -774,7 +797,7 @@ mod tests {
         assert_eq!(word_overlap(&a, &b), 0);
     }
 
-    // ----- top_scored_recordings -----
+    // ----- sort_recordings / recording_sort_key -----
 
     fn recording(id: &str, score: u32, release_title: &str) -> RemoteRecording {
         RemoteRecording {
@@ -792,36 +815,69 @@ mod tests {
     }
 
     #[test]
-    fn test_top_scored_recordings_returns_all_tied_at_max() {
-        // Cas concret : une version studio et une version live à égalité
-        // de score — les deux doivent ressortir, pas une seule.
-        let live = recording("live", 100, "On Air");
-        let studio = recording("studio", 100, "Greatest Hits II");
-        let cover_band = recording("cover", 60, "Tribute Album");
-        let recordings = [live, studio, cover_band];
+    fn test_sort_recordings_orders_by_score_descending_first() {
+        let tag = sample_local_tag(&[]);
+        let mut recordings = [
+            recording("low", 60, "Tribute Album"),
+            recording("high", 100, "On Air"),
+        ];
 
-        let top = top_scored_recordings(&recordings);
+        sort_recordings(&tag, &mut recordings);
 
-        assert_eq!(top.len(), 2);
-        assert!(top.iter().any(|r| r.id == "live"));
-        assert!(top.iter().any(|r| r.id == "studio"));
+        assert_eq!(recordings[0].id, "high");
+        assert_eq!(recordings[1].id, "low");
     }
 
     #[test]
-    fn test_top_scored_recordings_single_winner() {
-        let a = recording("a", 100, "On Air");
-        let b = recording("b", 80, "Greatest Hits II");
-        let recordings = [a, b];
+    fn test_sort_recordings_breaks_score_ties_alphabetically_by_artist() {
+        let tag = sample_local_tag(&[]);
+        let mut b_artist = recording("b", 100, "On Air");
+        b_artist.artist_credit = vec![ArtistCredit {
+            name: "Bee Artist".to_string(),
+        }];
+        let mut a_artist = recording("a", 100, "On Air");
+        a_artist.artist_credit = vec![ArtistCredit {
+            name: "Aardvark Artist".to_string(),
+        }];
+        let mut recordings = [b_artist, a_artist];
 
-        let top = top_scored_recordings(&recordings);
+        sort_recordings(&tag, &mut recordings);
 
-        assert_eq!(top.len(), 1);
-        assert_eq!(top[0].id, "a");
+        assert_eq!(recordings[0].id, "a"); // "Aardvark..." < "Bee..."
+        assert_eq!(recordings[1].id, "b");
     }
 
     #[test]
-    fn test_top_scored_recordings_empty_input() {
-        assert!(top_scored_recordings(&[]).is_empty());
+    fn test_sort_recordings_breaks_remaining_ties_by_title_then_year_then_album() {
+        let tag = sample_local_tag(&[]);
+
+        let mut older = recording("older", 100, "Album");
+        older.releases[0].date = Some("1990-01-01".to_string());
+        let mut newer = recording("newer", 100, "Album");
+        newer.releases[0].date = Some("2000-01-01".to_string());
+        // Même score, même artiste, même titre : seule l'année diffère.
+        let mut recordings = [newer, older];
+
+        sort_recordings(&tag, &mut recordings);
+
+        assert_eq!(recordings[0].id, "older"); // "1990" < "2000"
+        assert_eq!(recordings[1].id, "newer");
+    }
+
+    #[test]
+    fn test_sort_recordings_stable_order_when_everything_ties() {
+        let tag = sample_local_tag(&[]);
+        let mut recordings = [
+            recording("first", 100, "Same Album"),
+            recording("second", 100, "Same Album"),
+        ];
+
+        sort_recordings(&tag, &mut recordings);
+
+        // Rien ne les distingue : l'ordre d'origine est préservé (tri
+        // stable), pas une erreur.
+        assert_eq!(recordings[0].id, "first");
+        assert_eq!(recordings[1].id, "second");
     }
 
     // ----- best_matching_release -----
