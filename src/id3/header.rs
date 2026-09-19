@@ -154,6 +154,26 @@ impl std::fmt::Display for Id3v2Tag {
     }
 }
 
+/// Longueur du corps du tag ID3v2 (hors en-tête principal de 10 octets),
+/// lue dans les 10 premiers octets d'un fichier, sans rien lire de plus.
+///
+/// Sert à savoir combien d'octets lire avant même d'appeler [`read_tag`] —
+/// utile pour ne charger que le tag en mémoire plutôt que le fichier
+/// entier, voir [`crate::read_mp3_file`].
+///
+/// Renvoie `None` si ces 10 octets ne commencent pas par la signature
+/// `ID3` : pas de tag, rien à lire de plus.
+pub(crate) fn declared_tag_body_size(header: &[u8; 10]) -> Option<u32> {
+    if &header[0..3] != b"ID3" {
+        return None;
+    }
+
+    let size_bytes: [u8; 4] = header[6..10]
+        .try_into()
+        .expect("slice de 4 octets, conversion infaillible");
+    Some(synchsafe_to_u32(size_bytes))
+}
+
 /// Analyse le tag ID3v2 situé au début d'un fichier MP3, en-tête et frames
 /// comprises.
 ///
@@ -332,6 +352,30 @@ fn read_frames(body: &[u8], start: usize, version: Id3Version) -> Result<Vec<Fra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ----- declared_tag_body_size -----
+
+    #[test]
+    fn test_declared_tag_body_size_valid_header() {
+        let header = [b'I', b'D', b'3', 3, 0, 0, 0, 0, 0, 13];
+        assert_eq!(declared_tag_body_size(&header), Some(13));
+    }
+
+    #[test]
+    fn test_declared_tag_body_size_no_signature_returns_none() {
+        let header = [0u8; 10];
+        assert_eq!(declared_tag_body_size(&header), None);
+    }
+
+    #[test]
+    fn test_declared_tag_body_size_matches_real_file_bytes() {
+        // Octets exacts observés en tête de a_kind_of_magic.mp3.
+        let mut header = [0u8; 10];
+        header[0..3].copy_from_slice(b"ID3");
+        header[3] = 3;
+        header[6..10].copy_from_slice(&[0x00, 0x01, 0x5B, 0x61]);
+        assert_eq!(declared_tag_body_size(&header), Some(28129));
+    }
 
     /// Construit un en-tête ID3v2 valide suivi de `body` : la taille du
     /// tag est celle de `body`, encodée en synchsafe integer.

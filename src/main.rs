@@ -1,4 +1,4 @@
-use mp3_metadata::{FrameContent, read_mp3_file};
+use mp3_metadata::{FrameContent, Id3v2Tag, MpegAudio, read_mp3_file, read_mp3_file_with_audio};
 use std::env;
 use std::process::ExitCode;
 
@@ -6,21 +6,23 @@ fn main() -> ExitCode {
     let mut path = None;
     let mut verbose = false;
     let mut verify = false;
+    let mut load_audio = false;
 
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "--verbose" | "-v" => verbose = true,
             "--verify" => verify = true,
+            "--load-audio" => load_audio = true,
             _ => path = Some(arg),
         }
     }
 
     let Some(path) = path else {
-        eprintln!("Usage : mp3_metadata [--verbose] [--verify] <fichier.mp3>");
+        eprintln!("Usage : mp3_metadata [--verbose] [--verify] [--load-audio] <fichier.mp3>");
         return ExitCode::FAILURE;
     };
 
-    if let Err(err) = run(&path, verbose, verify) {
+    if let Err(err) = run(&path, verbose, verify, load_audio) {
         eprintln!("Erreur : {err}");
         return ExitCode::FAILURE;
     }
@@ -28,8 +30,22 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(path: &str, verbose: bool, verify: bool) -> Result<(), mp3_metadata::Mp3Error> {
-    let mp3 = read_mp3_file(path)?;
+/// Orchestre la commande : lit le fichier selon les options demandées,
+/// puis délègue chaque bloc d'affichage à sa propre fonction.
+fn run(
+    path: &str,
+    verbose: bool,
+    verify: bool,
+    load_audio: bool,
+) -> Result<(), mp3_metadata::Mp3Error> {
+    // Par défaut, seul le tag ID3v2 est lu (quelques dizaines de Ko au
+    // plus) : les données audio, potentiellement énormes, ne sont chargées
+    // que si --load-audio est passé.
+    let mp3 = if load_audio {
+        read_mp3_file_with_audio(path)?
+    } else {
+        read_mp3_file(path)?
+    };
     println!("{mp3}");
 
     let Some(tag) = &mp3.id3v2 else {
@@ -38,8 +54,26 @@ fn run(path: &str, verbose: bool, verify: bool) -> Result<(), mp3_metadata::Mp3E
     };
 
     println!("{tag}");
+    print_tag_summary(tag);
 
-    // Les accesseurs donnent directement les métadonnées usuelles.
+    if let Some(audio) = &mp3.audio {
+        print_audio_info(audio);
+    }
+
+    if verbose {
+        print_frames(tag);
+    }
+
+    if verify {
+        print_verification(tag);
+    }
+
+    Ok(())
+}
+
+/// Affiche le résumé des métadonnées usuelles d'un tag : titre, artiste,
+/// album, année, et les images qu'il porte.
+fn print_tag_summary(tag: &Id3v2Tag) {
     println!("Titre   : {}", tag.title().unwrap_or("?"));
     println!("Artiste : {}", tag.artist().unwrap_or("?"));
     println!("Album   : {}", tag.album().unwrap_or("?"));
@@ -50,32 +84,49 @@ fn run(path: &str, verbose: bool, verify: bool) -> Result<(), mp3_metadata::Mp3E
             mime_type, data, ..
         } = &frame.content
         {
-            println!("Pochette : {mime_type}, {} octets", data.len());
+            let taille_ko = data.len() as f64 / 1024.0;
+            println!(
+                "Pochette : {mime_type}, {} octets ({taille_ko:.2} Ko)",
+                data.len()
+            );
         }
     }
+}
 
-    if verbose {
-        for frame in &tag.frames {
-            println!("{frame}");
-        }
+/// Affiche la taille des données audio chargées (mode --load-audio).
+fn print_audio_info(audio: &MpegAudio) {
+    let taille_mo = audio.data.len() as f64 / (1024.0 * 1024.0);
+    println!(
+        "Audio    : {} octets chargés ({taille_mo:.2} Mo)",
+        audio.data.len()
+    );
+}
+
+/// Affiche le détail de chaque frame du tag (mode --verbose).
+fn print_frames(tag: &Id3v2Tag) {
+    for frame in &tag.frames {
+        println!("{frame}");
     }
+}
 
-    if verify {
-        // Un échec de vérification (pas de réseau, aucun résultat...)
-        // n'invalide pas le reste : le tag local a bien été lu, seul le
-        // contrôle en ligne n'a pas abouti.
-        #[cfg(feature = "verify")]
-        match mp3_metadata::verify::verify_tag(tag) {
-            Ok(reports) => {
-                for report in reports {
-                    println!("{report}");
-                }
+/// Interroge MusicBrainz et affiche le résultat (mode --verify).
+///
+/// Un échec de vérification (pas de réseau, aucun résultat...) n'invalide
+/// pas le reste : le tag local a bien été lu, seul le contrôle en ligne
+/// n'a pas abouti.
+fn print_verification(tag: &Id3v2Tag) {
+    #[cfg(feature = "verify")]
+    match mp3_metadata::verify::verify_tag(tag) {
+        Ok(reports) => {
+            for report in reports {
+                println!("{report}");
             }
-            Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
         }
-        #[cfg(not(feature = "verify"))]
+        Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
+    }
+    #[cfg(not(feature = "verify"))]
+    {
+        let _ = tag; // le paramètre n'est utilisé que dans la branche ci-dessus
         eprintln!("Compilé sans la fonctionnalité 'verify' (voir Cargo.toml)");
     }
-
-    Ok(())
 }
