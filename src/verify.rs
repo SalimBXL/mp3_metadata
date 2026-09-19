@@ -22,7 +22,8 @@
 //!   MusicBrainz distincts (version studio, live, remaster, session
 //!   radio...), parfois avec un score de pertinence textuelle identique
 //!   entre eux. [`verify_tag`] ne tranche pas seul entre eux : il renvoie
-//!   un rapport par candidat renvoyé par la recherche (jusqu'à 10), triés
+//!   un rapport par candidat renvoyé par la recherche (jusqu'à `limit`
+//!   résultats, voir [`verify_tag`]), triés
 //!   — voir [`sort_recordings`] — à charge pour l'appelant de choisir.
 //! - Un enregistrement MusicBrainz peut être associé à plusieurs éditions
 //!   (`releases`), chacune avec son propre titre d'album et sa propre
@@ -45,6 +46,12 @@ use serde::Deserialize;
 use std::fmt;
 
 const MUSICBRAINZ_SEARCH_URL: &str = "https://musicbrainz.org/ws/2/recording";
+
+/// Nombre de résultats demandés à MusicBrainz par défaut lorsque
+/// l'appelant n'en précise pas d'autre — voir [`verify_tag`]. MusicBrainz
+/// peut appliquer son propre plafond au-delà d'une certaine valeur, non
+/// vérifié ici.
+pub const DEFAULT_SEARCH_LIMIT: u32 = 20;
 
 /// Identifie l'application auprès de MusicBrainz, comme leur étiquette
 /// d'utilisation le demande.
@@ -300,9 +307,10 @@ impl fmt::Display for VerificationTable<'_> {
 ///
 /// Cherche par titre et/ou artiste (au moins l'un des deux doit être
 /// présent dans le tag local) et renvoie un rapport par enregistrement
-/// candidat renvoyé par la recherche (jusqu'à 10), trié — voir
-/// [`sort_recordings`]. S'il n'y en a qu'un, le `Vec` renvoyé n'a qu'un
-/// élément.
+/// candidat renvoyé par la recherche (jusqu'à `limit` résultats), trié —
+/// voir [`sort_recordings`]. S'il n'y en a qu'un, le `Vec` renvoyé n'a
+/// qu'un élément. [`DEFAULT_SEARCH_LIMIT`] est une valeur par défaut
+/// raisonnable si l'appelant n'a pas de préférence.
 ///
 /// # Erreurs
 ///
@@ -313,7 +321,7 @@ impl fmt::Display for VerificationTable<'_> {
 /// - [`VerifyError::Response`] si le corps de la réponse ne peut pas être
 ///   lu dans la forme JSON attendue.
 /// - [`VerifyError::NoMatch`] si la recherche ne renvoie aucun résultat.
-pub fn verify_tag(tag: &Id3v2Tag) -> Result<Vec<VerificationReport>, VerifyError> {
+pub fn verify_tag(tag: &Id3v2Tag, limit: u32) -> Result<Vec<VerificationReport>, VerifyError> {
     let title = tag.title();
     let artist = tag.artist();
 
@@ -322,12 +330,13 @@ pub fn verify_tag(tag: &Id3v2Tag) -> Result<Vec<VerificationReport>, VerifyError
     }
 
     let query = build_query(title, artist);
+    let limit_str = limit.to_string();
 
     let response: SearchResponse = ureq::get(MUSICBRAINZ_SEARCH_URL)
         .set("User-Agent", USER_AGENT)
         .query("query", &query)
         .query("fmt", "json")
-        .query("limit", "10")
+        .query("limit", &limit_str)
         .call()?
         .into_json()?;
 
