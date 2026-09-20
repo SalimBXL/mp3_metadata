@@ -144,13 +144,31 @@ impl Id3v2Tag {
 /// nombre de frames.
 impl std::fmt::Display for Id3v2Tag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let size_ko = self.size_ko();
-        writeln!(f, "- TAG ID3v2 -------------------")?;
-        writeln!(f, "Version : {}", self.version)?;
-        writeln!(f, "Flags   : {:02X}", self.flags)?;
-        writeln!(f, "Taille  : {} octets ({size_ko:.2} Ko)", self.size)?;
-        writeln!(f, "Frames  : {}", self.frames.len())?;
-        write!(f, "-------------------------------")
+        writeln!(f, "ID3v2")?;
+        writeln!(f, "{}", crate::SECTION_SEPARATOR)?;
+        writeln!(f, "{:<11}: {}", "Version", self.version)?;
+        writeln!(f, "{:<11}: {}", "Frames", self.frames.len())?;
+        writeln!(f)?;
+        writeln!(f, "{:<11}: {}", "Title", self.title().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Artist", self.artist().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Album", self.album().unwrap_or("?"))?;
+        writeln!(
+            f,
+            "{:<11}: {}",
+            "Album Artist",
+            self.album_artist().unwrap_or("?")
+        )?;
+        writeln!(f, "{:<11}: {}", "Track", self.track().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Genre", self.genre().unwrap_or("?"))?;
+        write!(f, "{:<11}: {}", "Year", self.year().unwrap_or("?"))?;
+
+        for frame in self.pictures() {
+            if let FrameContent::Picture { mime_type, .. } = &frame.content {
+                write!(f, "\n{:<11}: {mime_type}", "Cover")?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -759,6 +777,31 @@ mod tests {
     #[test]
     fn test_comment_returns_text_without_language_or_description() {
         assert_eq!(sample_tag().comment(), Some("Super chanson"));
+    }
+
+    // ----- Display -----
+
+    #[test]
+    fn test_display_includes_header_and_fields() {
+        let tag = sample_tag();
+        let text = tag.to_string();
+
+        assert!(text.starts_with("ID3v2\n"));
+        assert!(text.contains("Version    : 2.3.0"));
+        assert!(text.contains("Frames     : 9"));
+        assert!(text.contains("Title      : A Kind of Magic"));
+        assert!(text.contains("Album Artist: Queen")); // 12 caractères : dépasse la largeur de colonne (11), sans espace avant ":"
+        assert!(text.contains("Cover      : image/jpeg"));
+    }
+
+    #[test]
+    fn test_display_shows_placeholder_for_missing_fields() {
+        let body = build_frame_bytes(b"TIT2", &text_body("Solo"));
+        let tag = read_tag(&build_tag_bytes(3, 0, 0, &body)).unwrap().unwrap();
+        let text = tag.to_string();
+
+        assert!(text.contains("Artist     : ?"));
+        assert!(!text.contains("Cover")); // pas d'image, pas de ligne Cover
     }
 
     #[test]

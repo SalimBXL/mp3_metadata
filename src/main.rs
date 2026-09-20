@@ -1,4 +1,4 @@
-use mp3_metadata::{FrameContent, Id3v2Tag, MpegAudio, read_mp3_file, read_mp3_file_with_audio};
+use mp3_metadata::{Id3v2Tag, MpegAudio, read_mp3_file, read_mp3_file_with_audio};
 use std::env;
 use std::process::ExitCode;
 
@@ -51,7 +51,11 @@ fn main() -> ExitCode {
 }
 
 /// Orchestre la commande : lit le fichier selon les options demandées,
-/// puis délègue chaque bloc d'affichage à sa propre fonction.
+/// puis délègue chaque bloc d'affichage à sa propre fonction. Les
+/// sections "MP3", "Audio" (format et durée) et "ID3v2" s'affichent via
+/// leur propre `Display` ; seuls les éléments propres à la CLI (frames en
+/// détail, octets audio bruts effectivement chargés, vérification en
+/// ligne) sont assemblés ici.
 fn run(
     path: &str,
     verbose: bool,
@@ -59,15 +63,26 @@ fn run(
     load_audio: bool,
     limit: u32,
 ) -> Result<(), mp3_metadata::Mp3Error> {
-    // Par défaut, seul le tag ID3v2 est lu (quelques dizaines de Ko au
-    // plus) : les données audio, potentiellement énormes, ne sont chargées
-    // que si --load-audio est passé.
+    // Par défaut, seuls le tag ID3v2 et une petite sonde MPEG sont lus
+    // (quelques dizaines de Ko au plus) : les données audio elles-mêmes,
+    // potentiellement énormes, ne sont chargées que si --load-audio est
+    // passé.
     let mp3 = if load_audio {
         read_mp3_file_with_audio(path)?
     } else {
         read_mp3_file(path)?
     };
+
     println!("{mp3}");
+    println!();
+
+    if let Some(audio_format) = &mp3.audio_format {
+        println!("{audio_format}");
+        if let Some(audio) = &mp3.audio {
+            print_loaded_audio_size(audio);
+        }
+        println!();
+    }
 
     let Some(tag) = &mp3.id3v2 else {
         println!("Pas de tag ID3v2");
@@ -75,50 +90,28 @@ fn run(
     };
 
     println!("{tag}");
-    print_tag_summary(tag);
-
-    if let Some(audio) = &mp3.audio {
-        print_audio_info(audio);
-    }
 
     if verbose {
+        println!();
         print_frames(tag);
     }
 
     if verify {
+        println!();
         print_verification(tag, limit);
     }
 
     Ok(())
 }
 
-/// Affiche le résumé des métadonnées usuelles d'un tag : titre, artiste,
-/// album, année, et les images qu'il porte.
-fn print_tag_summary(tag: &Id3v2Tag) {
-    println!("Titre   : {}", tag.title().unwrap_or("?"));
-    println!("Artiste : {}", tag.artist().unwrap_or("?"));
-    println!("Album   : {}", tag.album().unwrap_or("?"));
-    println!("Année   : {}", tag.year().unwrap_or("?"));
-
-    for frame in tag.pictures() {
-        if let FrameContent::Picture {
-            mime_type, data, ..
-        } = &frame.content
-        {
-            let taille_ko = data.len() as f64 / 1024.0;
-            println!(
-                "Pochette : {mime_type}, {} octets ({taille_ko:.2} Ko)",
-                data.len()
-            );
-        }
-    }
-}
-
-/// Affiche la taille des données audio chargées (mode --load-audio).
-fn print_audio_info(audio: &MpegAudio) {
-    let taille_mo = audio.data.len() as f64 / (1024.0 * 1024.0);
+/// Affiche la taille des données audio brutes effectivement chargées
+/// (mode --load-audio) — distinct du format et de la durée estimée,
+/// affichés par défaut sans charger l'audio complet.
+fn print_loaded_audio_size(audio: &MpegAudio) {
+    let taille_mio = audio.data.len() as f64 / (1024.0 * 1024.0);
     println!(
-        "Audio    : {} octets chargés ({taille_mo:.2} Mo)",
+        "{:<11}: {} octets chargés ({taille_mio:.2} MiB)",
+        "Loaded",
         audio.data.len()
     );
 }
