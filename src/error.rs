@@ -121,3 +121,148 @@ impl std::error::Error for Mp3Error {
         }
     }
 }
+
+//
+// ---------- TESTS ----------
+//
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ----- Display -----
+    //
+    // Un message par variante : pas une correspondance exacte (le texte
+    // peut évoluer), mais la présence des valeurs portées par la variante,
+    // pour détecter un champ oublié dans le message si la variante change.
+
+    #[test]
+    fn test_display_not_found_includes_path() {
+        let err = Mp3Error::NotFound(PathBuf::from("musique/absent.mp3"));
+        assert!(err.to_string().contains("musique/absent.mp3"));
+    }
+
+    #[test]
+    fn test_display_read_failed_includes_path_and_source() {
+        let err = Mp3Error::ReadFailed {
+            path: PathBuf::from("musique/chanson.mp3"),
+            source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
+        };
+        let text = err.to_string();
+        assert!(text.contains("musique/chanson.mp3"));
+        assert!(text.contains("permission denied"));
+    }
+
+    #[test]
+    fn test_display_too_small_includes_len() {
+        let err = Mp3Error::TooSmall { len: 5 };
+        assert!(err.to_string().contains('5'));
+    }
+
+    #[test]
+    fn test_display_invalid_tag_size_includes_declared_and_available() {
+        let err = Mp3Error::InvalidTagSize {
+            declared: 1000,
+            available: 42,
+        };
+        let text = err.to_string();
+        assert!(text.contains("1000"));
+        assert!(text.contains("42"));
+    }
+
+    #[test]
+    fn test_display_unsupported_version_includes_major() {
+        let err = Mp3Error::UnsupportedVersion { major: 1 };
+        assert!(err.to_string().contains("ID3v2.1"));
+    }
+
+    #[test]
+    fn test_display_extended_header_too_short_includes_available() {
+        let err = Mp3Error::ExtendedHeaderTooShort { available: 2 };
+        assert!(err.to_string().contains('2'));
+    }
+
+    #[test]
+    fn test_display_frame_too_short_includes_offset() {
+        let err = Mp3Error::FrameTooShort { offset: 37 };
+        assert!(err.to_string().contains("37"));
+    }
+
+    #[test]
+    fn test_display_frame_size_overflow_includes_all_fields() {
+        let err = Mp3Error::FrameSizeOverflow {
+            offset: 10,
+            declared: 500,
+            available: 80,
+        };
+        let text = err.to_string();
+        assert!(text.contains("10"));
+        assert!(text.contains("500"));
+        assert!(text.contains("80"));
+    }
+
+    #[test]
+    fn test_display_unknown_text_encoding_includes_encoding() {
+        let err = Mp3Error::UnknownTextEncoding { encoding: 9 };
+        assert!(err.to_string().contains('9'));
+    }
+
+    #[test]
+    fn test_display_invalid_text_data_includes_encoding() {
+        let err = Mp3Error::InvalidTextData { encoding: 1 };
+        assert!(err.to_string().contains('1'));
+    }
+
+    // ----- source() -----
+
+    #[test]
+    fn test_source_read_failed_returns_the_io_error() {
+        let err = Mp3Error::ReadFailed {
+            path: PathBuf::from("x.mp3"),
+            source: io::Error::new(io::ErrorKind::NotFound, "introuvable"),
+        };
+        let source = std::error::Error::source(&err).expect("ReadFailed porte une source");
+        assert_eq!(source.to_string(), "introuvable");
+    }
+
+    #[test]
+    fn test_source_is_none_for_every_other_variant() {
+        let errors: Vec<Mp3Error> = vec![
+            Mp3Error::NotFound(PathBuf::from("x.mp3")),
+            Mp3Error::TooSmall { len: 1 },
+            Mp3Error::InvalidTagSize {
+                declared: 1,
+                available: 0,
+            },
+            Mp3Error::UnsupportedVersion { major: 1 },
+            Mp3Error::ExtendedHeaderTooShort { available: 0 },
+            Mp3Error::FrameTooShort { offset: 0 },
+            Mp3Error::FrameSizeOverflow {
+                offset: 0,
+                declared: 1,
+                available: 0,
+            },
+            Mp3Error::UnknownTextEncoding { encoding: 9 },
+            Mp3Error::InvalidTextData { encoding: 9 },
+        ];
+
+        for err in &errors {
+            assert!(
+                std::error::Error::source(err).is_none(),
+                "{err:?} ne devrait pas porter de source"
+            );
+        }
+    }
+
+    // ----- Debug -----
+    //
+    // Le derive(Debug) est vérifié indirectement : s'il manquait un champ
+    // non-Debug, la compilation échouerait déjà. On vérifie seulement que
+    // le format ne panique pas et reste non vide.
+
+    #[test]
+    fn test_debug_does_not_panic() {
+        let err = Mp3Error::TooSmall { len: 3 };
+        assert!(!format!("{err:?}").is_empty());
+    }
+}

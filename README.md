@@ -117,7 +117,7 @@ src/
 cargo test
 ```
 
-Chaque fonction de parsing (`read_tag`, `read_frame`, `decode_frame`, `decode_string`, `read_id3v1_tag`) est couverte par des tests unitaires, y compris les cas limites (fichiers tronqués, tailles invalides, encodings inconnus, remplissage par espaces ou par octets nuls) et les protections contre les dépassements arithmétiques sur des offsets ou tailles corrompus.
+Chaque fonction de parsing (`read_tag`, `read_frame`, `decode_frame`, `decode_string`, `read_id3v1_tag`) ainsi que `Mp3Error` (`Display`, `source()`) sont couverts par des tests unitaires, y compris les cas limites (fichiers tronqués, tailles invalides, encodings inconnus, remplissage par espaces ou par octets nuls) et les protections contre les dépassements arithmétiques sur des offsets ou tailles corrompus.
 
 ## Limitations connues
 
