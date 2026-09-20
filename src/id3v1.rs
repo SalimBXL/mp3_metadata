@@ -31,12 +31,18 @@ pub(crate) const ID3V1_LEN: usize = 128;
 /// champ est une chaîne de taille fixe, décodée en ISO-8859-1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Id3v1Tag {
+    /// Titre du morceau.
     pub title: String,
+    /// Artiste principal.
     pub artist: String,
+    /// Titre de l'album.
     pub album: String,
     /// Année, telle qu'écrite sur les 4 caractères qui lui sont réservés
     /// (peut être vide ou non numérique si le champ n'a jamais été rempli).
     pub year: String,
+    /// Commentaire libre. Pour un tag ID3v1.1, les deux derniers octets de
+    /// ce champ peuvent être réutilisés pour porter [`Id3v1Tag::track`] à
+    /// la place de texte (voir [`read_id3v1_tag`]).
     pub comment: String,
     /// Numéro de piste, présent seulement si le tag suit l'extension
     /// ID3v1.1 (voir [`read_id3v1_tag`] pour la condition de détection).

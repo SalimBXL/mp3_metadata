@@ -1,3 +1,9 @@
+//! Bibliothèque de lecture des métadonnées d'un fichier MP3 : tag ID3v2
+//! (en-tête, frames et leur contenu décodé), tag ID3v1 / ID3v1.1, et
+//! format audio (version/couche MPEG, débit, durée estimée) déduit de la
+//! première frame audio. Voir [`read_mp3_file`] pour le point d'entrée
+//! principal.
+
 mod error;
 mod id3;
 mod id3v1;
@@ -21,7 +27,10 @@ use std::path::{Path, PathBuf};
 /// [`Mp3File`], [`AudioFormat`], [`Id3v2Tag`]).
 pub(crate) const SECTION_SEPARATOR: &str = "────────────────────────────────────";
 
+/// Données audio brutes d'un fichier MP3 (tout ce qui suit le tag ID3v2),
+/// chargées par [`read_mp3_file_with_audio`].
 pub struct MpegAudio {
+    /// Octets audio bruts, tels que lus depuis le fichier.
     pub data: Vec<u8>,
 }
 

@@ -29,8 +29,12 @@ use std::fmt;
 /// Version MPEG déclarée dans l'en-tête d'une frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MpegVersion {
+    /// MPEG-1 (44.1 / 48 / 32 kHz).
     V1,
+    /// MPEG-2 (« LSF », taux d'échantillonnage moitié de MPEG-1).
     V2,
+    /// MPEG-2.5 (extension non officielle, taux d'échantillonnage encore
+    /// plus bas, surtout utilisée pour la voix).
     V2_5,
 }
 
@@ -47,8 +51,12 @@ impl fmt::Display for MpegVersion {
 /// Couche (layer) MPEG déclarée dans l'en-tête d'une frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MpegLayer {
+    /// Layer I — rare pour du MP3, plutôt utilisé par des formats comme le
+    /// DAB.
     LayerI,
+    /// Layer II — utilisé par exemple par MP2, la radio DAB.
     LayerII,
+    /// Layer III — la couche qui donne son nom au « MP3 » (`.mp3`).
     LayerIII,
 }
 
@@ -65,9 +73,15 @@ impl fmt::Display for MpegLayer {
 /// Mode de canaux déclaré dans l'en-tête d'une frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelMode {
+    /// Deux canaux encodés indépendamment.
     Stereo,
+    /// Deux canaux encodés en exploitant leur redondance (partage de
+    /// certaines informations entre canaux pour réduire le débit).
     JointStereo,
+    /// Deux canaux mono indépendants regroupés dans une même frame (pas
+    /// de mise en commun d'informations, contrairement à `JointStereo`).
     DualChannel,
+    /// Un seul canal.
     Mono,
 }
 
@@ -85,12 +99,18 @@ impl fmt::Display for ChannelMode {
 /// En-tête décodé d'une frame audio MPEG (ses 4 premiers octets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MpegFrameHeader {
+    /// Version MPEG (MPEG-1, MPEG-2, MPEG-2.5).
     pub version: MpegVersion,
+    /// Couche MPEG (Layer I, II ou III).
     pub layer: MpegLayer,
     /// Débit binaire en kbit/s.
     pub bitrate_kbps: u16,
+    /// Taux d'échantillonnage en Hz (ex. 44100 pour 44.1 kHz).
     pub sample_rate_hz: u32,
+    /// Mode de canaux (stéréo, mono...).
     pub channel_mode: ChannelMode,
+    /// Bit de padding de l'en-tête : `true` si cette frame porte un octet
+    /// supplémentaire pour ajuster sa taille au débit binaire moyen visé.
     pub padding: bool,
 }
 
@@ -99,6 +119,8 @@ pub struct MpegFrameHeader {
 /// tête de module.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioFormat {
+    /// En-tête de la première frame audio trouvée, d'où sont dérivés le
+    /// débit, le taux d'échantillonnage, etc.
     pub header: MpegFrameHeader,
     /// Durée estimée en secondes, à débit constant (CBR).
     pub duration_secs: f64,

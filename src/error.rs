@@ -2,42 +2,79 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
+/// Erreur renvoyée par les fonctions de lecture et de décodage de ce
+/// crate — lecture du fichier sur disque comme décodage du tag ID3v2 ou
+/// de ses frames. Chaque variante porte les données nécessaires pour
+/// reconstituer le message d'erreur (voir son [`fmt::Display`]) sans
+/// avoir à ré-analyser le fichier.
 #[derive(Debug)]
 pub enum Mp3Error {
+    /// Le chemin donné n'a pas l'extension `.mp3`, ou le fichier n'existe
+    /// pas (voir [`crate::read_mp3_file`]).
     NotFound(PathBuf),
+    /// Une opération d'entrée/sortie sur le fichier a échoué (ouverture,
+    /// lecture, positionnement du curseur...).
     ReadFailed {
+        /// Chemin du fichier concerné.
         path: PathBuf,
+        /// Erreur d'E/S d'origine, accessible aussi via
+        /// [`std::error::Error::source`].
         source: io::Error,
     },
+    /// Le fichier fait moins de 10 octets : pas assez pour contenir un
+    /// en-tête ID3v2 complet.
     TooSmall {
+        /// Taille réelle du fichier, en octets.
         len: usize,
     },
+    /// La taille de tag ID3v2 déclarée dans l'en-tête dépasse la taille
+    /// réelle des données disponibles.
     InvalidTagSize {
+        /// Taille déclarée dans l'en-tête, en octets.
         declared: u32,
+        /// Nombre d'octets réellement disponibles.
         available: usize,
     },
     /// Version majeure d'ID3v2 non prise en charge (uniquement 2, 3 et 4
     /// sont gérées).
     UnsupportedVersion {
+        /// Version majeure lue dans l'en-tête (ex. `1` pour un tag
+        /// prétendument ID3v2.1, qui n'existe pas).
         major: u8,
     },
     /// L'extended header déclaré dans les flags de l'en-tête principal ne
     /// tient pas dans les octets disponibles.
     ExtendedHeaderTooShort {
+        /// Nombre d'octets réellement disponibles pour l'extended header.
         available: usize,
     },
+    /// Il ne reste pas assez d'octets, à partir de cette position, pour
+    /// contenir un en-tête de frame ID3v2 complet.
     FrameTooShort {
+        /// Décalage, dans le corps du tag, où la lecture de la frame a
+        /// commencé.
         offset: usize,
     },
+    /// La taille de frame déclarée dans son en-tête dépasse les octets
+    /// disponibles dans le corps du tag.
     FrameSizeOverflow {
+        /// Décalage, dans le corps du tag, où la frame commence.
         offset: usize,
+        /// Taille de frame déclarée dans son en-tête, en octets.
         declared: u32,
+        /// Nombre d'octets réellement disponibles à partir de `offset`.
         available: usize,
     },
+    /// L'octet d'encoding en tête d'une frame texte n'est aucune des
+    /// quatre valeurs reconnues par ID3v2 (0 à 3).
     UnknownTextEncoding {
+        /// Octet d'encoding lu.
         encoding: u8,
     },
+    /// Le texte d'une frame est mal formé pour l'encoding déclaré (BOM
+    /// manquant ou invalide en UTF-16, séquence d'octets invalide...).
     InvalidTextData {
+        /// Octet d'encoding sous lequel le décodage a échoué.
         encoding: u8,
     },
 }

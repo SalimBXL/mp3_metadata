@@ -26,7 +26,12 @@ pub enum FrameContent {
 
     /// Contenu d'une frame `TXXX` : une paire description / valeur définie
     /// par l'application qui a écrit le tag.
-    UserText { description: String, value: String },
+    UserText {
+        /// Nom du champ défini par l'application (ex. `"MusicBrainz Track Id"`).
+        description: String,
+        /// Valeur associée à cette description.
+        value: String,
+    },
 
     /// Contenu d'une frame `COMM` (commentaire) ou `USLT` (paroles non
     /// synchronisées). Ces deux frames partagent exactement la même
@@ -37,6 +42,7 @@ pub enum FrameContent {
         language: String,
         /// Description courte, souvent vide.
         description: String,
+        /// Texte du commentaire ou des paroles.
         text: String,
     },
 
@@ -54,6 +60,7 @@ pub enum FrameContent {
         /// Rôle de l'image selon la spécification ID3v2 (`3` = pochette
         /// avant, `4` = pochette arrière, etc.).
         picture_type: u8,
+        /// Description courte de l'image, souvent vide.
         description: String,
         /// Données brutes de l'image.
         data: Vec<u8>,

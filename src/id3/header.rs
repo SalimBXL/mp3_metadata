@@ -18,7 +18,9 @@ const UNSYNCHRONISATION_FLAG: u8 = 0x80;
 /// ID3v2.3.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Id3Version {
+    /// Version majeure (2, 3 ou 4 pour ID3v2.2, .3, .4 respectivement).
     pub major: u8,
+    /// Version mineure (quasiment toujours `0` en pratique).
     pub minor: u8,
 }
 
@@ -37,6 +39,7 @@ impl std::fmt::Display for Id3Version {
 /// [`FrameContent::Unknown`].
 #[derive(Debug, Clone)]
 pub struct Id3v2Tag {
+    /// Version du tag (2.2, 2.3 ou 2.4).
     pub version: Id3Version,
     /// Octet de flags du tag ID3v2 (bits d'options telles que
     /// l'unsynchronisation, la présence d'un extended header, etc.).
