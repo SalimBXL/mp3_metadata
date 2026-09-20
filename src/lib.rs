@@ -1,5 +1,6 @@
 mod error;
 mod id3;
+mod id3v1;
 mod mpeg;
 #[cfg(feature = "verify")]
 pub mod verify;
@@ -7,9 +8,11 @@ pub mod verify;
 pub use error::Mp3Error;
 pub use id3::frame::{Frame, FrameContent};
 pub use id3::header::{Id3Version, Id3v2Tag};
+pub use id3v1::Id3v1Tag;
 pub use mpeg::{AudioFormat, ChannelMode, MpegFrameHeader, MpegLayer, MpegVersion};
 
 use id3::header::read_tag;
+use id3v1::read_id3v1_tag;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -19,13 +22,6 @@ use std::path::{Path, PathBuf};
 pub(crate) const SECTION_SEPARATOR: &str = "────────────────────────────────────";
 
 pub struct MpegAudio {
-    pub data: Vec<u8>,
-}
-
-pub struct Id3v1Tag {
-    pub version: String,
-    pub flags: u8,
-    pub size: u32,
     pub data: Vec<u8>,
 }
 
@@ -63,7 +59,11 @@ pub struct Mp3File {
     /// Données audio brutes. `None` sauf lecture avec
     /// [`read_mp3_file_with_audio`].
     pub audio: Option<MpegAudio>,
-    /// Tag ID3v1 extrait de la fin du fichier. Pas encore extrait.
+    /// Tag ID3v1 (ou ID3v1.1) extrait des 128 derniers octets du fichier.
+    /// `None` si le fichier fait moins de 128 octets, ou si ces 128 octets
+    /// ne commencent pas par la signature `TAG`. Un fichier peut porter à
+    /// la fois un tag ID3v2 (au début) et un tag ID3v1 (à la fin) : les
+    /// deux sont indépendants l'un de l'autre.
     pub id3v1: Option<Id3v1Tag>,
 }
 
@@ -147,14 +147,17 @@ const MPEG_PROBE_LEN: usize = 4096;
 /// [`id3::header::read_tag`]). Une petite fenêtre d'octets juste après le
 /// tag est ensuite sondée pour y trouver la première frame audio MPEG
 /// (voir [`MPEG_PROBE_LEN`], [`mpeg::find_frame_header`]) et en déduire
-/// [`Mp3File::audio_format`]. Le reste du fichier (les données audio elles
-/// -mêmes) n'est jamais lu : pour un fichier de plusieurs centaines de
-/// mégaoctets, seuls quelques dizaines de kilooctets sont donc chargés en
-/// mémoire. Pour charger aussi les données audio, voir
+/// [`Mp3File::audio_format`]. Les 128 derniers octets du fichier sont
+/// aussi lus, indépendamment du reste, pour y chercher un tag ID3v1 (voir
+/// [`id3v1::read_id3v1_tag`]). Le reste du fichier (les données audio
+/// elles-mêmes) n'est jamais lu : pour un fichier de plusieurs centaines
+/// de mégaoctets, seuls quelques dizaines de kilooctets sont donc chargés
+/// en mémoire. Pour charger aussi les données audio, voir
 /// [`read_mp3_file_with_audio`].
 ///
 /// Un fichier sans tag ID3v2 n'est pas une erreur : le champ
-/// [`Mp3File::id3v2`] vaut alors `None`.
+/// [`Mp3File::id3v2`] vaut alors `None`, de même pour
+/// [`Mp3File::id3v1`] si le fichier n'a pas de tag ID3v1.
 ///
 /// # Erreurs
 ///
@@ -256,6 +259,19 @@ fn read_mp3_file_impl(
         AudioFormat::from_header_and_audio_bytes(header, audio_bytes)
     });
 
+    // Le tag ID3v1 (s'il existe) occupe toujours les 128 derniers octets
+    // du fichier, indépendamment du tag ID3v2 lu plus haut : une seule
+    // petite lecture ciblée par la fin, jamais le fichier entier.
+    let id3v1 = if size >= id3v1::ID3V1_LEN {
+        file.seek(SeekFrom::End(-(id3v1::ID3V1_LEN as i64)))
+            .map_err(read_failed)?;
+        let mut tail = [0u8; id3v1::ID3V1_LEN];
+        file.read_exact(&mut tail).map_err(read_failed)?;
+        read_id3v1_tag(&tail)
+    } else {
+        None
+    };
+
     let audio = if include_audio {
         // La sonde a déjà avancé le curseur au-delà du début de l'audio :
         // revenir en arrière pour ne rien perdre du début du flux.
@@ -273,7 +289,7 @@ fn read_mp3_file_impl(
         size,
         id3v2,
         audio_format,
-        id3v1: None,
+        id3v1,
         audio,
     })
 }
@@ -447,6 +463,146 @@ mod tests {
         let mp3 = read_mp3_file_with_audio(file.path()).unwrap();
 
         assert_eq!(mp3.audio.map(|a| a.data), Some(trailer));
+    }
+
+    /// Construit les 128 octets d'un tag ID3v1 minimal (titre "Hi" en
+    /// ID3v1.1, piste 7).
+    fn id3v1_bytes(title: &str) -> [u8; 128] {
+        let mut tag = [0u8; 128];
+        tag[0..3].copy_from_slice(b"TAG");
+        let title_bytes = title.as_bytes();
+        tag[3..3 + title_bytes.len()].copy_from_slice(title_bytes);
+        tag[97 + 28] = 0; // marqueur ID3v1.1
+        tag[97 + 29] = 7; // numéro de piste
+        tag[127] = 17; // Rock
+        tag
+    }
+
+    #[test]
+    fn test_read_mp3_file_reads_trailing_id3v1_tag() {
+        use std::io::Write;
+
+        let (tag, _) = tag_with_trailer(0);
+        let mut file = Builder::new().suffix(".mp3").tempfile().unwrap();
+        file.write_all(&tag).unwrap();
+        file.write_all(&id3v1_bytes("Hi")).unwrap();
+        file.flush().unwrap();
+
+        let mp3 = read_mp3_file(file.path()).unwrap();
+        let id3v1 = mp3
+            .id3v1
+            .expect("un tag ID3v1 était présent en fin de fichier");
+
+        assert_eq!(id3v1.title, "Hi");
+        assert_eq!(id3v1.track, Some(7));
+        assert_eq!(id3v1.genre_name(), Some("Rock"));
+        // Le tag ID3v2 lu au début du fichier reste indépendant du tag
+        // ID3v1 lu à la fin.
+        assert_eq!(mp3.id3v2.as_ref().and_then(|t| t.title()), Some("Hi"));
+    }
+
+    /// Construit un tag ID3v2.3 avec tous les champs communs à ID3v1
+    /// (title, artist, album, year, comment, track, genre), pour vérifier
+    /// l'alignement de l'affichage côte à côte des deux formats.
+    fn full_id3v2_tag_bytes() -> Vec<u8> {
+        fn frame(id: &[u8; 4], encoding_and_text: &[u8]) -> Vec<u8> {
+            let mut data = Vec::new();
+            data.extend_from_slice(id);
+            data.extend_from_slice(&(encoding_and_text.len() as u32).to_be_bytes());
+            data.extend_from_slice(&[0, 0]); // flags
+            data.extend_from_slice(encoding_and_text);
+            data
+        }
+        fn text(s: &str) -> Vec<u8> {
+            let mut body = vec![3]; // UTF-8
+            body.extend_from_slice(s.as_bytes());
+            body
+        }
+
+        let mut body = frame(b"TIT2", &text("Titre"));
+        body.extend(frame(b"TPE1", &text("Artiste")));
+        body.extend(frame(b"TALB", &text("Album")));
+        body.extend(frame(b"TYER", &text("1999")));
+        let mut comm = vec![3];
+        comm.extend_from_slice(b"eng\0Commentaire");
+        body.extend(frame(b"COMM", &comm));
+        body.extend(frame(b"TRCK", &text("3/12")));
+        body.extend(frame(b"TCON", &text("Rock")));
+
+        let mut tag = Vec::new();
+        tag.extend_from_slice(b"ID3");
+        tag.extend_from_slice(&[3, 0, 0]); // version 2.3.0, flags 0
+        let size = body.len() as u32;
+        tag.push(((size >> 21) & 0x7F) as u8);
+        tag.push(((size >> 14) & 0x7F) as u8);
+        tag.push(((size >> 7) & 0x7F) as u8);
+        tag.push((size & 0x7F) as u8);
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    #[test]
+    fn test_id3v1_and_id3v2_display_align_shared_fields_line_by_line() {
+        use std::io::Write;
+
+        let mut file = Builder::new().suffix(".mp3").tempfile().unwrap();
+        file.write_all(&full_id3v2_tag_bytes()).unwrap();
+        file.write_all(&id3v1_bytes("Titre")).unwrap();
+        file.flush().unwrap();
+
+        let mp3 = read_mp3_file(file.path()).unwrap();
+        let id3v2_text = mp3.id3v2.unwrap().to_string();
+        let id3v1_text = mp3.id3v1.unwrap().to_string();
+
+        let line_of = |text: &str, label: &str| {
+            text.lines()
+                .position(|l| l.starts_with(label))
+                .unwrap_or_else(|| panic!("champ {label:?} introuvable dans {text:?}"))
+        };
+
+        for label in [
+            "Title", "Artist", "Album", "Year", "Comment", "Track", "Genre",
+        ] {
+            assert_eq!(
+                line_of(&id3v2_text, label),
+                line_of(&id3v1_text, label),
+                "le champ {label:?} n'est pas sur la même ligne dans les deux affichages"
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_mp3_file_without_trailing_tag_has_no_id3v1() {
+        use std::io::Write;
+
+        // Trailer assez long pour que les 128 derniers octets du fichier
+        // soient entièrement à l'intérieur (donc bien testés), sans
+        // commencer par la signature "TAG".
+        let (tag, trailer) = tag_with_trailer(200);
+        let mut file = Builder::new().suffix(".mp3").tempfile().unwrap();
+        file.write_all(&tag).unwrap();
+        file.write_all(&trailer).unwrap();
+        file.flush().unwrap();
+
+        let mp3 = read_mp3_file(file.path()).unwrap();
+
+        assert!(mp3.id3v1.is_none());
+    }
+
+    #[test]
+    fn test_read_mp3_file_shorter_than_id3v1_tag_has_no_id3v1() {
+        use std::io::Write;
+
+        // 20 octets : plus que les 10 requis pour l'en-tête, mais moins
+        // que les 128 d'un tag ID3v1 -- aucune tentative de lecture ne
+        // doit être faite en dessous de la fin du fichier.
+        let mut file = Builder::new().suffix(".mp3").tempfile().unwrap();
+        file.write_all(&[0xFFu8; 20]).unwrap();
+        file.flush().unwrap();
+
+        let mp3 = read_mp3_file(file.path()).unwrap();
+
+        assert!(mp3.id3v1.is_none());
     }
 
     #[test]
