@@ -140,27 +140,29 @@ impl Id3v2Tag {
     }
 }
 
-/// Affiche un résumé lisible du tag ID3v2 : version, flags, taille et
-/// nombre de frames.
+/// Affiche un résumé lisible du tag ID3v2 : version et nombre de frames
+/// dans le titre de section, puis les champs dans le même ordre que
+/// [`crate::Id3v1Tag`] (voir sa propre `Display`) pour que les deux
+/// s'alignent ligne à ligne une fois affichés côte à côte — les champs
+/// propres à ID3v2 (`Album Artist`, `Cover`) viennent après, sans
+/// équivalent en face.
 impl std::fmt::Display for Id3v2Tag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "ID3v2")?;
+        writeln!(f, "ID3v2 ({}, {} frames)", self.version, self.frames.len())?;
         writeln!(f, "{}", crate::SECTION_SEPARATOR)?;
-        writeln!(f, "{:<11}: {}", "Version", self.version)?;
-        writeln!(f, "{:<11}: {}", "Frames", self.frames.len())?;
-        writeln!(f)?;
         writeln!(f, "{:<11}: {}", "Title", self.title().unwrap_or("?"))?;
         writeln!(f, "{:<11}: {}", "Artist", self.artist().unwrap_or("?"))?;
         writeln!(f, "{:<11}: {}", "Album", self.album().unwrap_or("?"))?;
-        writeln!(
+        writeln!(f, "{:<11}: {}", "Year", self.year().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Comment", self.comment().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Track", self.track().unwrap_or("?"))?;
+        writeln!(f, "{:<11}: {}", "Genre", self.genre().unwrap_or("?"))?;
+        write!(
             f,
             "{:<11}: {}",
             "Album Artist",
             self.album_artist().unwrap_or("?")
         )?;
-        writeln!(f, "{:<11}: {}", "Track", self.track().unwrap_or("?"))?;
-        writeln!(f, "{:<11}: {}", "Genre", self.genre().unwrap_or("?"))?;
-        write!(f, "{:<11}: {}", "Year", self.year().unwrap_or("?"))?;
 
         for frame in self.pictures() {
             if let FrameContent::Picture { mime_type, .. } = &frame.content {
@@ -786,12 +788,37 @@ mod tests {
         let tag = sample_tag();
         let text = tag.to_string();
 
-        assert!(text.starts_with("ID3v2\n"));
-        assert!(text.contains("Version    : 2.3.0"));
-        assert!(text.contains("Frames     : 9"));
+        assert!(text.starts_with("ID3v2 (2.3.0, 9 frames)\n"));
         assert!(text.contains("Title      : A Kind of Magic"));
+        assert!(text.contains("Artist     : Queen"));
+        assert!(text.contains("Album      : Greatest Hits"));
+        assert!(text.contains("Year       : 1991"));
+        assert!(text.contains("Comment    : Super chanson"));
+        assert!(text.contains("Track      : 1/17"));
+        assert!(text.contains("Genre      : Rock"));
         assert!(text.contains("Album Artist: Queen")); // 12 caractères : dépasse la largeur de colonne (11), sans espace avant ":"
         assert!(text.contains("Cover      : image/jpeg"));
+    }
+
+    #[test]
+    fn test_display_fields_are_in_the_same_order_as_id3v1() {
+        // Les champs communs aux deux formats doivent apparaître dans le
+        // même ordre, pour que l'affichage côte à côte (voir main.rs,
+        // side_by_side) aligne chaque champ sur la même ligne que son
+        // équivalent ID3v1.
+        let tag = sample_tag();
+        let text = tag.to_string();
+
+        // Préfixe exact de chaque champ ("Album      : ", etc.), pour ne
+        // pas confondre "Album" avec "Album Artist" qui partage son début.
+        let field = |label: &str| text.find(&format!("{label:<11}: ")).unwrap();
+
+        assert!(field("Title") < field("Artist"));
+        assert!(field("Artist") < field("Album"));
+        assert!(field("Album") < field("Year"));
+        assert!(field("Year") < field("Comment"));
+        assert!(field("Comment") < field("Track"));
+        assert!(field("Track") < field("Genre"));
     }
 
     #[test]
@@ -801,6 +828,7 @@ mod tests {
         let text = tag.to_string();
 
         assert!(text.contains("Artist     : ?"));
+        assert!(text.contains("Comment    : ?"));
         assert!(!text.contains("Cover")); // pas d'image, pas de ligne Cover
     }
 
