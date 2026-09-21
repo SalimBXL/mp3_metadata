@@ -9,8 +9,8 @@ use crate::id3::{deunsynchronize, synchsafe_to_u32};
 use std::borrow::Cow;
 
 mod decode;
-use decode::decode_frame;
 pub use decode::FrameContent;
+use decode::decode_frame;
 
 /// Bit "Unsynchronisation" des format flags d'une frame ID3v2.4 (octet
 /// bas des deux octets de [`Frame::flags`]) — voir

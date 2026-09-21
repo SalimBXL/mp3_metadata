@@ -108,7 +108,10 @@ impl AudioFormat {
         // (Xing/Info sans le bit "bytes", voir [`parse_xing_stream_info`]),
         // la taille audio du fichier reste une valeur raisonnable : c'est
         // la même que celle utilisée pour l'estimation CBR par ailleurs.
-        let total_bytes = info.total_bytes.map(|b| b as f64).unwrap_or(audio_bytes as f64);
+        let total_bytes = info
+            .total_bytes
+            .map(|b| b as f64)
+            .unwrap_or(audio_bytes as f64);
         let average_bitrate_kbps = (duration_secs > 0.0)
             .then(|| ((total_bytes * 8.0) / duration_secs / 1000.0).round() as u32);
 
@@ -257,7 +260,8 @@ fn parse_vbri_stream_info(frame: &[u8]) -> Option<VbrStreamInfo> {
     // 4 (étiquette) + 2 (version) + 2 (délai) + 2 (qualité) = 10 octets
     // avant le nombre d'octets, puis 4 octets avant le nombre de frames.
     let bytes_offset = VBRI_OFFSET + 10;
-    let total_bytes = u32::from_be_bytes(frame.get(bytes_offset..bytes_offset + 4)?.try_into().ok()?);
+    let total_bytes =
+        u32::from_be_bytes(frame.get(bytes_offset..bytes_offset + 4)?.try_into().ok()?);
     let frame_count_offset = bytes_offset + 4;
     let frame_count = u32::from_be_bytes(
         frame
@@ -326,13 +330,19 @@ mod tests {
 
     #[test]
     fn test_samples_per_frame_mpeg1_layer3() {
-        assert_eq!(samples_per_frame(MpegVersion::V1, MpegLayer::LayerIII), 1152);
+        assert_eq!(
+            samples_per_frame(MpegVersion::V1, MpegLayer::LayerIII),
+            1152
+        );
     }
 
     #[test]
     fn test_samples_per_frame_mpeg2_layer3_is_half_of_mpeg1() {
         assert_eq!(samples_per_frame(MpegVersion::V2, MpegLayer::LayerIII), 576);
-        assert_eq!(samples_per_frame(MpegVersion::V2_5, MpegLayer::LayerIII), 576);
+        assert_eq!(
+            samples_per_frame(MpegVersion::V2_5, MpegLayer::LayerIII),
+            576
+        );
     }
 
     #[test]
