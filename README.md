@@ -10,6 +10,7 @@ Une bibliothèque Rust pour lire les métadonnées d'un fichier MP3 : tag ID3v2 
 - Décodage du contenu des frames texte (`TIT2`, `TPE1`, `TPE2`, `TALB`, `TRCK`, `TCON`), en respectant l'octet d'encoding ID3v2 (ISO-8859-1, UTF-16 avec BOM, UTF-16BE, UTF-8).
 - Gestion d'erreurs typée via l'enum `Mp3Error`, plutôt que des chaînes de caractères génériques.
 - Affichage lisible (`Display`) pour `Mp3File`, `Id3v2Tag`, `Frame` et `Id3v1Tag` — le CLI affiche ce dernier à droite du tag ID3v2 lorsque les deux sont présents.
+- Vérification en ligne (feature `verify`, activée par défaut) des métadonnées locales auprès de MusicBrainz (`--verify`), en combinant une recherche par morceau et, si le tag local a un album, une recherche ciblée sur cet album — pensée pour les titres très repris en concert ou très réédités, où la première seule ne suffit pas (voir `src/verify.rs`).
 
 ## Installation
 
@@ -93,7 +94,7 @@ src/
 ## API principale
 
 | Élément | Description |
-|---|---|
+| --- | --- |
 | `read_mp3_file(path) -> Result<Mp3File, Mp3Error>` | Lit un fichier `.mp3` sur le disque et en extrait le tag ID3v2 complet et le tag ID3v1. |
 | `read_mp3_file_with_audio(path) -> Result<Mp3File, Mp3Error>` | Comme `read_mp3_file`, en chargeant aussi les données audio. |
 | `Mp3File` | Fichier MP3 chargé : chemin, taille, tag ID3v2 (`id3v2`), tag ID3v1 (`id3v1`), format audio. |
@@ -105,7 +106,7 @@ src/
 ## Frames prises en charge
 
 | Identifiant | Type de contenu |
-|---|---|
+| --- | --- |
 | `TIT2`, `TPE1`, `TPE2`, `TALB`, `TRCK`, `TCON` | Texte (titre, artiste, album, piste, genre) |
 | `APIC` | Image jointe (pochette d'album) |
 | `COMM` | Commentaire |
