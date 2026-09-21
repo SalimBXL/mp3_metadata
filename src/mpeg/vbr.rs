@@ -1,30 +1,14 @@
-//! Décodage minimal d'un en-tête de frame audio MPEG (les 4 premiers
-//! octets d'une frame MP3), à des fins d'affichage : version, couche,
-//! débit binaire, taux d'échantillonnage, mode de canaux.
+//! Durée et débit moyen d'un fichier MP3, à partir d'un éventuel en-tête
+//! Xing/Info ou VBRI trouvé dans la première frame audio.
 //!
-//! Ne décode pas le flux audio lui-même — seulement l'en-tête de la
-//! première frame trouvée, suffisant pour connaître le format du fichier
-//! et estimer sa durée sans avoir à lire les données audio en entier. Pour
-//! la durée justement, cette première frame est aussi examinée à la
-//! recherche d'un en-tête Xing/Info ou VBRI (voir
-//! [`AudioFormat::duration_is_exact`]) : les encodeurs à débit variable
-//! (VBR) — et beaucoup à débit constant aussi, LAME en tête — y déclarent
-//! le nombre total de frames du fichier, ce qui donne une durée exacte
-//! plutôt qu'estimée à partir de la seule taille du fichier.
+//! Les encodeurs à débit variable (VBR) — et beaucoup à débit constant
+//! aussi, LAME en tête — y déclarent le nombre total de frames du
+//! fichier, ce qui donne une durée exacte plutôt qu'estimée à partir de
+//! la seule taille du fichier. [`AudioFormat`] combine ce calcul avec
+//! l'en-tête de frame décodé par le module parent ([`super`]).
 //!
 //! # Portée volontairement limitée
 //!
-//! - La recherche de la première frame ([`find_frame_header`]) ne
-//!   vérifie pas qu'une deuxième frame valide suit à la position
-//!   attendue. Un très court passage de données non-audio pourrait, par
-//!   pure coïncidence, produire un faux positif — en pratique marginal,
-//!   puisque la recherche démarre juste après le tag ID3v2 d'un fichier
-//!   MP3 réel, pas au milieu de données arbitraires.
-//! - Les frames à débit "free" (bitrate index `0000`, débit variable
-//!   défini par comptage entre repères de synchronisation plutôt que
-//!   déclaré dans l'en-tête) ne sont pas reconnues comme valides : elles
-//!   sont exceptionnelles en pratique, et les gérer demanderait de
-//!   localiser une deuxième frame pour en déduire le débit.
 //! - Xing/Info et VBRI ne sont cherchés que dans la première frame audio
 //!   trouvée, et seulement si cette recherche tombe dans la fenêtre déjà
 //!   sondée pour y trouver l'en-tête de frame (voir
@@ -39,95 +23,11 @@
 //!   flux pour un décodage "gapless" ; ces quelques dizaines de
 //!   millisecondes ne sont pas retranchées de la durée calculée ici.
 
+use super::{ChannelMode, MpegFrameHeader, MpegLayer, MpegVersion};
 use std::fmt;
 
-/// Version MPEG déclarée dans l'en-tête d'une frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MpegVersion {
-    /// MPEG-1 (44.1 / 48 / 32 kHz).
-    V1,
-    /// MPEG-2 (« LSF », taux d'échantillonnage moitié de MPEG-1).
-    V2,
-    /// MPEG-2.5 (extension non officielle, taux d'échantillonnage encore
-    /// plus bas, surtout utilisée pour la voix).
-    V2_5,
-}
-
-impl fmt::Display for MpegVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MpegVersion::V1 => write!(f, "MPEG-1"),
-            MpegVersion::V2 => write!(f, "MPEG-2"),
-            MpegVersion::V2_5 => write!(f, "MPEG-2.5"),
-        }
-    }
-}
-
-/// Couche (layer) MPEG déclarée dans l'en-tête d'une frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MpegLayer {
-    /// Layer I — rare pour du MP3, plutôt utilisé par des formats comme le
-    /// DAB.
-    LayerI,
-    /// Layer II — utilisé par exemple par MP2, la radio DAB.
-    LayerII,
-    /// Layer III — la couche qui donne son nom au « MP3 » (`.mp3`).
-    LayerIII,
-}
-
-impl fmt::Display for MpegLayer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MpegLayer::LayerI => write!(f, "Layer I"),
-            MpegLayer::LayerII => write!(f, "Layer II"),
-            MpegLayer::LayerIII => write!(f, "Layer III"),
-        }
-    }
-}
-
-/// Mode de canaux déclaré dans l'en-tête d'une frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelMode {
-    /// Deux canaux encodés indépendamment.
-    Stereo,
-    /// Deux canaux encodés en exploitant leur redondance (partage de
-    /// certaines informations entre canaux pour réduire le débit).
-    JointStereo,
-    /// Deux canaux mono indépendants regroupés dans une même frame (pas
-    /// de mise en commun d'informations, contrairement à `JointStereo`).
-    DualChannel,
-    /// Un seul canal.
-    Mono,
-}
-
-impl fmt::Display for ChannelMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ChannelMode::Stereo => write!(f, "Stereo"),
-            ChannelMode::JointStereo => write!(f, "Joint Stereo"),
-            ChannelMode::DualChannel => write!(f, "Dual Channel"),
-            ChannelMode::Mono => write!(f, "Mono"),
-        }
-    }
-}
-
-/// En-tête décodé d'une frame audio MPEG (ses 4 premiers octets).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MpegFrameHeader {
-    /// Version MPEG (MPEG-1, MPEG-2, MPEG-2.5).
-    pub version: MpegVersion,
-    /// Couche MPEG (Layer I, II ou III).
-    pub layer: MpegLayer,
-    /// Débit binaire en kbit/s.
-    pub bitrate_kbps: u16,
-    /// Taux d'échantillonnage en Hz (ex. 44100 pour 44.1 kHz).
-    pub sample_rate_hz: u32,
-    /// Mode de canaux (stéréo, mono...).
-    pub channel_mode: ChannelMode,
-    /// Bit de padding de l'en-tête : `true` si cette frame porte un octet
-    /// supplémentaire pour ajuster sa taille au débit binaire moyen visé.
-    pub padding: bool,
-}
+#[cfg(test)]
+use super::parse_frame_header;
 
 /// Format audio d'un fichier MP3, déduit de sa première frame audio, et
 /// durée estimée à partir de la taille du fichier — voir les limites en
@@ -158,7 +58,6 @@ pub struct AudioFormat {
     /// `header.bitrate_kbps` qui n'est que celui de la première frame.
     pub average_bitrate_kbps: Option<u32>,
 }
-
 impl AudioFormat {
     /// Construit un format audio à partir d'un en-tête de frame et du
     /// nombre d'octets audio du fichier (hors tag ID3v2), en supposant un
@@ -181,7 +80,7 @@ impl AudioFormat {
     /// Xing/Info ou VBRI (voir [`vbr_stream_info`]).
     ///
     /// `frame_offset` est la position, dans `probe`, où commence la
-    /// première frame trouvée (voir [`find_frame_header`]) : c'est à
+    /// première frame trouvée (voir [`super::find_frame_header`]) : c'est à
     /// partir de là, et seulement là, que Xing/Info/VBRI sont cherchés —
     /// ni avant (aucun sens), ni sur une éventuelle frame suivante (leur
     /// emplacement standard est toujours la toute première frame audio du
@@ -224,7 +123,6 @@ impl AudioFormat {
         }
     }
 }
-
 /// Affiche la section "Audio" : format MPEG, débit, taux
 /// d'échantillonnage, canaux, et durée (voir les limites en tête de
 /// module concernant sa précision). Un `~` précède la durée quand elle
@@ -255,137 +153,6 @@ impl fmt::Display for AudioFormat {
         write!(f, "{:<11}: {estimated}{minutes}:{seconds:02}", "Duration")
     }
 }
-
-/// Décode l'en-tête de frame MPEG codé sur ces 4 octets.
-///
-/// Renvoie `None` si les 11 premiers bits ne sont pas le repère de
-/// synchronisation attendu, ou si l'un des champs (version, couche, débit,
-/// taux d'échantillonnage) porte une valeur réservée ou non prise en
-/// charge (voir les limites en tête de module pour le débit "free").
-fn parse_frame_header(bytes: [u8; 4]) -> Option<MpegFrameHeader> {
-    let word = u32::from_be_bytes(bytes);
-
-    if word >> 21 != 0b111_1111_1111 {
-        return None;
-    }
-
-    let version = match (word >> 19) & 0b11 {
-        0b00 => MpegVersion::V2_5,
-        0b10 => MpegVersion::V2,
-        0b11 => MpegVersion::V1,
-        _ => return None, // 0b01 réservé
-    };
-
-    let layer = match (word >> 17) & 0b11 {
-        0b01 => MpegLayer::LayerIII,
-        0b10 => MpegLayer::LayerII,
-        0b11 => MpegLayer::LayerI,
-        _ => return None, // 0b00 réservé
-    };
-
-    let bitrate_kbps = bitrate_table(version, layer, ((word >> 12) & 0b1111) as usize)?;
-    let sample_rate_hz = sample_rate_table(version, ((word >> 10) & 0b11) as usize)?;
-    let padding = (word >> 9) & 1 == 1;
-
-    let channel_mode = match (word >> 6) & 0b11 {
-        0b00 => ChannelMode::Stereo,
-        0b01 => ChannelMode::JointStereo,
-        0b10 => ChannelMode::DualChannel,
-        _ => ChannelMode::Mono, // 0b11
-    };
-
-    Some(MpegFrameHeader {
-        version,
-        layer,
-        bitrate_kbps,
-        sample_rate_hz,
-        channel_mode,
-        padding,
-    })
-}
-
-/// Cherche la première frame MPEG valide dans `data`, à partir du début.
-///
-/// Renvoie l'en-tête décodé et le décalage (en octets, dans `data`)
-/// auquel il commence. `None` si aucune frame valide n'a été trouvée.
-pub(crate) fn find_frame_header(data: &[u8]) -> Option<(usize, MpegFrameHeader)> {
-    if data.len() < 4 {
-        return None;
-    }
-
-    for offset in 0..=data.len() - 4 {
-        let bytes: [u8; 4] = data[offset..offset + 4]
-            .try_into()
-            .expect("slice de 4 octets, conversion infaillible");
-        if let Some(header) = parse_frame_header(bytes) {
-            return Some((offset, header));
-        }
-    }
-
-    None
-}
-
-/// Débit binaire (kbit/s) pour cette combinaison version/couche/index, ou
-/// `None` pour un index hors table (`1111`, réservé) ou "free" (`0000`,
-/// voir les limites en tête de module).
-///
-/// Table ISO/IEC 11172-3 : MPEG2 et MPEG2.5 partagent la même table,
-/// distincte de celle de MPEG1.
-fn bitrate_table(version: MpegVersion, layer: MpegLayer, index: usize) -> Option<u16> {
-    const MPEG1: [[u16; 15]; 3] = [
-        [
-            0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448,
-        ], // Layer I
-        [
-            0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384,
-        ], // Layer II
-        [
-            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
-        ], // Layer III
-    ];
-    const MPEG2: [[u16; 15]; 3] = [
-        [
-            0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256,
-        ], // Layer I
-        [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160], // Layer II
-        [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160], // Layer III
-    ];
-
-    let table = match version {
-        MpegVersion::V1 => &MPEG1,
-        MpegVersion::V2 | MpegVersion::V2_5 => &MPEG2,
-    };
-
-    let layer_index = match layer {
-        MpegLayer::LayerI => 0,
-        MpegLayer::LayerII => 1,
-        MpegLayer::LayerIII => 2,
-    };
-
-    match table[layer_index].get(index) {
-        Some(&0) | None => None, // "free" (index 0) ou hors table (index 15)
-        Some(&kbps) => Some(kbps),
-    }
-}
-
-/// Taux d'échantillonnage (Hz) pour cette version/index, ou `None` pour un
-/// index hors table (`11`, réservé).
-fn sample_rate_table(version: MpegVersion, index: usize) -> Option<u32> {
-    const RATES: [[u32; 3]; 3] = [
-        [44100, 48000, 32000], // MPEG1
-        [22050, 24000, 16000], // MPEG2
-        [11025, 12000, 8000],  // MPEG2.5
-    ];
-
-    let version_index = match version {
-        MpegVersion::V1 => 0,
-        MpegVersion::V2 => 1,
-        MpegVersion::V2_5 => 2,
-    };
-
-    RATES[version_index].get(index).copied()
-}
-
 /// Nombre d'échantillons audio encodés par frame, selon la version et la
 /// couche MPEG — nécessaire pour convertir un nombre de frames (Xing/Info
 /// ou VBRI, voir [`vbr_stream_info`]) en durée exacte. MPEG2/2.5 Layer III
@@ -402,7 +169,6 @@ fn samples_per_frame(version: MpegVersion, layer: MpegLayer) -> u32 {
         },
     }
 }
-
 /// Taille (en octets) de l'information annexe ("side info") qui suit
 /// immédiatement l'en-tête de 4 octets d'une frame Layer III, avant son
 /// contenu audio — c'est juste après elle qu'un en-tête Xing/Info est
@@ -417,7 +183,6 @@ fn side_info_len(version: MpegVersion, channel_mode: ChannelMode) -> usize {
         (_, _) => 17,
     }
 }
-
 /// Ce qu'un en-tête Xing/Info ou VBRI déclare sur l'ensemble du flux audio
 /// — pas seulement la frame qui le porte — et qui intéresse ce module :
 /// voir [`vbr_stream_info`].
@@ -430,14 +195,13 @@ struct VbrStreamInfo {
     /// bit 1 de ses flags dans [`parse_xing_stream_info`]).
     total_bytes: Option<u32>,
 }
-
 /// Cherche un en-tête Xing ou Info dans cette frame, et renvoie ce qu'il
 /// déclare sur l'ensemble du flux, s'il déclare au moins le nombre de
 /// frames (voir le bit 0 de ses flags — sans lui, l'en-tête ne nous sert
 /// à rien ici).
 ///
 /// `frame` doit commencer à l'en-tête de 4 octets de la première frame
-/// audio (voir [`find_frame_header`]). Les encodeurs qui écrivent ce genre
+/// audio (voir [`super::find_frame_header`]). Les encodeurs qui écrivent ce genre
 /// d'en-tête (LAME, entre autres) le placent juste après l'information
 /// annexe de cette première frame (voir [`side_info_len`]), qu'ils
 /// laissent sinon silencieuse pour y faire de la place. L'étiquette est
@@ -474,11 +238,9 @@ fn parse_xing_stream_info(
         total_bytes,
     })
 }
-
 /// Décalage, depuis le début de la frame, auquel un en-tête VBRI
 /// commence — voir [`parse_vbri_stream_info`].
 const VBRI_OFFSET: usize = 36;
-
 /// Cherche un en-tête VBRI dans cette frame, et renvoie ce qu'il déclare
 /// sur l'ensemble du flux.
 ///
@@ -513,7 +275,6 @@ fn parse_vbri_stream_info(frame: &[u8]) -> Option<VbrStreamInfo> {
         total_bytes: Some(total_bytes),
     })
 }
-
 /// Cherche un en-tête Xing/Info ou VBRI dans la première frame audio —
 /// essayés dans cet ordre, Xing/Info étant le plus courant en pratique
 /// (LAME, l'encodeur MP3 le plus répandu, l'écrit systématiquement).
@@ -534,95 +295,6 @@ fn vbr_stream_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Vecteurs calculés bit à bit (voir la conversation de conception),
-    // pas transcrits à la main depuis une table.
-
-    #[test]
-    fn test_parse_frame_header_mpeg1_layer3_320kbps_44100_stereo() {
-        let header = parse_frame_header([0xFF, 0xFB, 0xE0, 0x00]).unwrap();
-
-        assert_eq!(header.version, MpegVersion::V1);
-        assert_eq!(header.layer, MpegLayer::LayerIII);
-        assert_eq!(header.bitrate_kbps, 320);
-        assert_eq!(header.sample_rate_hz, 44100);
-        assert_eq!(header.channel_mode, ChannelMode::Stereo);
-        assert!(!header.padding);
-    }
-
-    #[test]
-    fn test_parse_frame_header_mpeg2_layer3_64kbps_24000_mono() {
-        let header = parse_frame_header([0xFF, 0xF3, 0x84, 0xC0]).unwrap();
-
-        assert_eq!(header.version, MpegVersion::V2);
-        assert_eq!(header.layer, MpegLayer::LayerIII);
-        assert_eq!(header.bitrate_kbps, 64);
-        assert_eq!(header.sample_rate_hz, 24000);
-        assert_eq!(header.channel_mode, ChannelMode::Mono);
-    }
-
-    #[test]
-    fn test_parse_frame_header_mpeg2_5_layer3_32kbps_8000_joint_stereo_padded() {
-        let header = parse_frame_header([0xFF, 0xE3, 0x4A, 0x40]).unwrap();
-
-        assert_eq!(header.version, MpegVersion::V2_5);
-        assert_eq!(header.layer, MpegLayer::LayerIII);
-        assert_eq!(header.bitrate_kbps, 32);
-        assert_eq!(header.sample_rate_hz, 8000);
-        assert_eq!(header.channel_mode, ChannelMode::JointStereo);
-        assert!(header.padding);
-    }
-
-    #[test]
-    fn test_parse_frame_header_no_sync_returns_none() {
-        assert!(parse_frame_header([0x00, 0x00, 0x00, 0x00]).is_none());
-    }
-
-    #[test]
-    fn test_parse_frame_header_reserved_layer_returns_none() {
-        // Bits de couche à 00, réservés.
-        assert!(parse_frame_header([0xFF, 0xF9, 0x50, 0x00]).is_none());
-    }
-
-    #[test]
-    fn test_parse_frame_header_free_bitrate_returns_none() {
-        // Bitrate index 0000 ("free") : non pris en charge, voir la doc.
-        let mut bytes = [0xFF, 0xFB, 0xE0, 0x00];
-        bytes[2] &= 0b0000_1111; // remet l'index de débit à 0000
-        assert!(parse_frame_header(bytes).is_none());
-    }
-
-    // ----- find_frame_header -----
-
-    #[test]
-    fn test_find_frame_header_at_start() {
-        let data = [0xFF, 0xFB, 0xE0, 0x00, 0xAA, 0xAA];
-        let (offset, header) = find_frame_header(&data).unwrap();
-
-        assert_eq!(offset, 0);
-        assert_eq!(header.bitrate_kbps, 320);
-    }
-
-    #[test]
-    fn test_find_frame_header_after_some_padding() {
-        let mut data = vec![0x00, 0x00, 0x00, 0x00, 0x00]; // padding avant l'audio
-        data.extend_from_slice(&[0xFF, 0xFB, 0xE0, 0x00]);
-        let (offset, header) = find_frame_header(&data).unwrap();
-
-        assert_eq!(offset, 5);
-        assert_eq!(header.bitrate_kbps, 320);
-    }
-
-    #[test]
-    fn test_find_frame_header_none_when_absent() {
-        let data = [0x00; 32];
-        assert!(find_frame_header(&data).is_none());
-    }
-
-    #[test]
-    fn test_find_frame_header_too_short() {
-        assert!(find_frame_header(&[0xFF, 0xFB]).is_none());
-    }
 
     // ----- AudioFormat -----
 
@@ -654,7 +326,6 @@ mod tests {
         // Xing/Info/VBRI).
         assert!(text.contains("Duration   : ~4:24"));
     }
-
     // ----- samples_per_frame -----
 
     #[test]
@@ -681,7 +352,6 @@ mod tests {
         assert_eq!(samples_per_frame(MpegVersion::V1, MpegLayer::LayerII), 1152);
         assert_eq!(samples_per_frame(MpegVersion::V2, MpegLayer::LayerII), 1152);
     }
-
     // ----- side_info_len -----
 
     #[test]
@@ -706,29 +376,34 @@ mod tests {
     fn test_side_info_len_mpeg2_mono_is_9() {
         assert_eq!(side_info_len(MpegVersion::V2, ChannelMode::Mono), 9);
     }
-
     // ----- parse_xing_stream_info -----
+
+    /// Champs utilisés par `xing_frame` — un struct plutôt que six
+    /// paramètres positionnels, pour que chaque valeur (`0x1`, `2000`,
+    /// `None`...) soit nommée à l'appel plutôt qu'à deviner par sa
+    /// position.
+    struct XingFrameFields<'a> {
+        version: MpegVersion,
+        channel_mode: ChannelMode,
+        tag: &'a [u8; 4],
+        flags: u32,
+        frame_count: u32,
+        total_bytes: Option<u32>,
+    }
 
     /// Construit une frame factice : en-tête à 4 octets, information
     /// annexe silencieuse (des zéros suffisent, on ne la décode pas), puis
     /// un en-tête Xing/Info à `tag`, avec `flags` et, dans cet ordre, le
     /// nombre de frames puis le nombre d'octets si les bits correspondants
     /// sont posés.
-    fn xing_frame(
-        version: MpegVersion,
-        channel_mode: ChannelMode,
-        tag: &[u8; 4],
-        flags: u32,
-        frame_count: u32,
-        total_bytes: Option<u32>,
-    ) -> Vec<u8> {
-        let mut frame = vec![0u8; 4 + side_info_len(version, channel_mode)];
-        frame.extend_from_slice(tag);
-        frame.extend_from_slice(&flags.to_be_bytes());
-        if flags & 0x1 != 0 {
-            frame.extend_from_slice(&frame_count.to_be_bytes());
+    fn xing_frame(fields: XingFrameFields) -> Vec<u8> {
+        let mut frame = vec![0u8; 4 + side_info_len(fields.version, fields.channel_mode)];
+        frame.extend_from_slice(fields.tag);
+        frame.extend_from_slice(&fields.flags.to_be_bytes());
+        if fields.flags & 0x1 != 0 {
+            frame.extend_from_slice(&fields.frame_count.to_be_bytes());
         }
-        if let Some(bytes) = total_bytes {
+        if let Some(bytes) = fields.total_bytes {
             frame.extend_from_slice(&bytes.to_be_bytes());
         }
         frame
@@ -736,14 +411,14 @@ mod tests {
 
     #[test]
     fn test_parse_xing_stream_info_frame_count_only() {
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x1, // seulement le bit "nombre de frames"
-            1234,
-            None,
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x1, // seulement le bit "nombre de frames"
+            frame_count: 1234,
+            total_bytes: None,
+        });
 
         let info = parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).unwrap();
 
@@ -753,14 +428,14 @@ mod tests {
 
     #[test]
     fn test_parse_xing_stream_info_frame_count_and_bytes() {
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x3, // bits "nombre de frames" et "nombre d'octets"
-            1234,
-            Some(999_999),
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x3, // bits "nombre de frames" et "nombre d'octets"
+            frame_count: 1234,
+            total_bytes: Some(999_999),
+        });
 
         let info = parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).unwrap();
 
@@ -771,41 +446,41 @@ mod tests {
     #[test]
     fn test_parse_xing_stream_info_recognizes_info_tag_too() {
         // "Info" : LAME en CBR, mêmes métadonnées que "Xing" en VBR.
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Info",
-            0x1,
-            1234,
-            None,
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Info",
+            flags: 0x1,
+            frame_count: 1234,
+            total_bytes: None,
+        });
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_some());
     }
 
     #[test]
     fn test_parse_xing_stream_info_none_without_frame_count_bit() {
         // Bit 0 non posé : rien d'exploitable, même avec l'étiquette présente.
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x0,
-            1234,
-            None,
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x0,
+            frame_count: 1234,
+            total_bytes: None,
+        });
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_none());
     }
 
     #[test]
     fn test_parse_xing_stream_info_none_without_recognized_tag() {
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Nope",
-            0x1,
-            1234,
-            None,
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Nope",
+            flags: 0x1,
+            frame_count: 1234,
+            total_bytes: None,
+        });
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_none());
     }
 
@@ -814,7 +489,14 @@ mod tests {
         // Même en-tête Xing, mais l'information annexe qui le précède n'a
         // pas la même taille en mono : le chercher au décalage stéréo sur
         // une frame mono doit échouer.
-        let frame = xing_frame(MpegVersion::V1, ChannelMode::Mono, b"Xing", 0x1, 1234, None);
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Mono,
+            tag: b"Xing",
+            flags: 0x1,
+            frame_count: 1234,
+            total_bytes: None,
+        });
 
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Mono).is_some());
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_none());
@@ -827,7 +509,6 @@ mod tests {
         frame.extend_from_slice(b"Xing");
         assert!(parse_xing_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_none());
     }
-
     // ----- parse_vbri_stream_info -----
 
     fn vbri_frame(frame_count: u32, total_bytes: u32) -> Vec<u8> {
@@ -864,21 +545,20 @@ mod tests {
         let frame = vec![0u8; VBRI_OFFSET + 20];
         assert!(parse_vbri_stream_info(&frame).is_none());
     }
-
     // ----- vbr_stream_info -----
 
     #[test]
     fn test_vbr_stream_info_prefers_xing_over_vbri() {
         // Un fichier ne devrait jamais porter les deux, mais si c'était le
         // cas, Xing/Info est cherché en premier (voir la doc).
-        let frame = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x1,
-            111,
-            None,
-        );
+        let frame = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x1,
+            frame_count: 111,
+            total_bytes: None,
+        });
         let info = vbr_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).unwrap();
         assert_eq!(info.frame_count, 111);
     }
@@ -895,7 +575,6 @@ mod tests {
         let frame = vec![0u8; 200];
         assert!(vbr_stream_info(&frame, MpegVersion::V1, ChannelMode::Stereo).is_none());
     }
-
     // ----- AudioFormat::from_probe -----
 
     fn mpeg1_stereo_frame_header_bytes() -> [u8; 4] {
@@ -909,14 +588,14 @@ mod tests {
         // octets de la frame elle-même n'ont pas besoin d'être un vrai
         // en-tête : seul leur décalage compte (voir xing_frame).
         let mut probe = vec![0xAAu8; 10]; // remplissage avant la frame
-        probe.extend(xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x1,
-            2000, // 2000 frames Layer III MPEG1 = 2000 * 1152 échantillons
-            None,
-        ));
+        probe.extend(xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x1,
+            frame_count: 2000, // 2000 frames Layer III MPEG1 = 2000 * 1152 échantillons
+            total_bytes: None,
+        }));
 
         let format = AudioFormat::from_probe(&probe, 10, header, 999_999_999);
 
@@ -928,14 +607,14 @@ mod tests {
     #[test]
     fn test_from_probe_computes_average_bitrate_from_declared_bytes() {
         let header = parse_frame_header(mpeg1_stereo_frame_header_bytes()).unwrap();
-        let probe = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x3,
-            2000,
-            Some(1_000_000),
-        );
+        let probe = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x3,
+            frame_count: 2000,
+            total_bytes: Some(1_000_000),
+        });
 
         let format = AudioFormat::from_probe(&probe, 0, header, 0);
         let expected_secs: f64 = 2000.0 * 1152.0 / 44100.0;
@@ -949,14 +628,14 @@ mod tests {
         // L'en-tête ne déclare pas le nombre d'octets (bit 1 absent) :
         // `audio_bytes`, passé par l'appelant, sert de repli.
         let header = parse_frame_header(mpeg1_stereo_frame_header_bytes()).unwrap();
-        let probe = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x1,
-            2000,
-            None,
-        );
+        let probe = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x1,
+            frame_count: 2000,
+            total_bytes: None,
+        });
 
         let format = AudioFormat::from_probe(&probe, 0, header, 500_000);
         let expected_secs: f64 = 2000.0 * 1152.0 / 44100.0;
@@ -994,14 +673,14 @@ mod tests {
     #[test]
     fn test_display_shows_average_bitrate_label_when_present() {
         let header = parse_frame_header(mpeg1_stereo_frame_header_bytes()).unwrap();
-        let probe = xing_frame(
-            MpegVersion::V1,
-            ChannelMode::Stereo,
-            b"Xing",
-            0x3,
-            2000,
-            Some(1_000_000),
-        );
+        let probe = xing_frame(XingFrameFields {
+            version: MpegVersion::V1,
+            channel_mode: ChannelMode::Stereo,
+            tag: b"Xing",
+            flags: 0x3,
+            frame_count: 2000,
+            total_bytes: Some(1_000_000),
+        });
         let format = AudioFormat::from_probe(&probe, 0, header, 0);
         let text = format.to_string();
 

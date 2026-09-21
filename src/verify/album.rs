@@ -3,11 +3,14 @@
 //! d'ensemble dans [`super`].
 
 use super::{
-    ArtistCredit, FieldMatch, REQUEST_INTERVAL, USER_AGENT, VerificationReport, VerifyError,
-    compare_field, normalize_words, quote_lucene, release_year, word_overlap,
+    ArtistCredit, REQUEST_INTERVAL, USER_AGENT, VerificationReport, VerifyError, compare_field,
+    normalize_words, quote_lucene, release_year, word_overlap,
 };
 use crate::id3::header::Id3v2Tag;
 use serde::Deserialize;
+
+#[cfg(test)]
+use super::FieldMatch;
 
 /// Base des requêtes de recherche (`?query=...`) et de lookup
 /// (`/{id}?inc=recordings`) d'éditions — voir [`search_by_album`].
@@ -42,7 +45,7 @@ const RELEASE_LOOKUP_CANDIDATES: usize = 3;
 /// pour une recherche infructueuse (voir ci-dessus). [`verify_tag`] avale
 /// ces erreurs : cette recherche n'est qu'un complément à la recherche
 /// principale par titre/artiste.
-fn search_by_album(tag: &Id3v2Tag) -> Result<Option<VerificationReport>, VerifyError> {
+pub(super) fn search_by_album(tag: &Id3v2Tag) -> Result<Option<VerificationReport>, VerifyError> {
     let Some(album) = tag.album() else {
         return Ok(None);
     };
@@ -347,9 +350,12 @@ mod tests {
             (b"TALB", "Greatest Hits II"),
             (b"TYER", "1991"),
         ]);
-        let report =
-            build_album_report(&tag, &sample_release_search_result(), &sample_release_lookup())
-                .unwrap();
+        let report = build_album_report(
+            &tag,
+            &sample_release_search_result(),
+            &sample_release_lookup(),
+        )
+        .unwrap();
 
         assert_eq!(report.recording_id, "rec-a-kind-of-magic");
         assert_eq!(report.title, FieldMatch::Match);
@@ -362,8 +368,11 @@ mod tests {
     #[test]
     fn test_build_album_report_none_when_no_track_matches_local_title() {
         let tag = sample_local_tag(&[(b"TIT2", "Bohemian Rhapsody")]); // pas sur cette édition
-        let report =
-            build_album_report(&tag, &sample_release_search_result(), &sample_release_lookup());
+        let report = build_album_report(
+            &tag,
+            &sample_release_search_result(),
+            &sample_release_lookup(),
+        );
 
         assert!(report.is_none());
     }
