@@ -89,7 +89,10 @@ pub enum FrameContent {
 ///   corps de la frame n'est pas l'une des quatre valeurs reconnues.
 /// - [`Mp3Error::InvalidTextData`] si le texte est mal formé, ou si un
 ///   champ terminé par un nul ne l'est pas (frame tronquée ou corrompue).
-pub(super) fn decode_frame(frame_id: &[u8; 4], frame_data: &[u8]) -> Result<FrameContent, Mp3Error> {
+pub(super) fn decode_frame(
+    frame_id: &[u8; 4],
+    frame_data: &[u8],
+) -> Result<FrameContent, Mp3Error> {
     if frame_data.is_empty() {
         return Ok(FrameContent::Empty);
     }

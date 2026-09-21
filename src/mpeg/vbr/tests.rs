@@ -34,13 +34,19 @@ fn test_audio_format_display_matches_expected_layout() {
 
 #[test]
 fn test_samples_per_frame_mpeg1_layer3() {
-    assert_eq!(samples_per_frame(MpegVersion::V1, MpegLayer::LayerIII), 1152);
+    assert_eq!(
+        samples_per_frame(MpegVersion::V1, MpegLayer::LayerIII),
+        1152
+    );
 }
 
 #[test]
 fn test_samples_per_frame_mpeg2_layer3_is_half_of_mpeg1() {
     assert_eq!(samples_per_frame(MpegVersion::V2, MpegLayer::LayerIII), 576);
-    assert_eq!(samples_per_frame(MpegVersion::V2_5, MpegLayer::LayerIII), 576);
+    assert_eq!(
+        samples_per_frame(MpegVersion::V2_5, MpegLayer::LayerIII),
+        576
+    );
 }
 
 #[test]

@@ -350,9 +350,12 @@ mod tests {
             (b"TALB", "Greatest Hits II"),
             (b"TYER", "1991"),
         ]);
-        let report =
-            build_album_report(&tag, &sample_release_search_result(), &sample_release_lookup())
-                .unwrap();
+        let report = build_album_report(
+            &tag,
+            &sample_release_search_result(),
+            &sample_release_lookup(),
+        )
+        .unwrap();
 
         assert_eq!(report.recording_id, "rec-a-kind-of-magic");
         assert_eq!(report.title, FieldMatch::Match);
@@ -365,8 +368,11 @@ mod tests {
     #[test]
     fn test_build_album_report_none_when_no_track_matches_local_title() {
         let tag = sample_local_tag(&[(b"TIT2", "Bohemian Rhapsody")]); // pas sur cette édition
-        let report =
-            build_album_report(&tag, &sample_release_search_result(), &sample_release_lookup());
+        let report = build_album_report(
+            &tag,
+            &sample_release_search_result(),
+            &sample_release_lookup(),
+        );
 
         assert!(report.is_none());
     }

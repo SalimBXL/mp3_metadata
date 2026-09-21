@@ -185,8 +185,7 @@ fn test_decode_frame_any_t_frame_is_text() {
     data.extend_from_slice(b"Queen");
 
     for id in [
-        b"TIT2", b"TPE1", b"TPE2", b"TALB", b"TRCK", b"TCON", b"TCOM", b"TPUB", b"TYER",
-        b"TSSE",
+        b"TIT2", b"TPE1", b"TPE2", b"TALB", b"TRCK", b"TCON", b"TCOM", b"TPUB", b"TYER", b"TSSE",
     ] {
         assert!(
             matches!(decode_frame(id, &data).unwrap(), FrameContent::Text(_)),

@@ -188,7 +188,9 @@ fn test_read_mp3_file_reads_trailing_id3v1_tag() {
     file.flush().unwrap();
 
     let mp3 = read_mp3_file(file.path()).unwrap();
-    let id3v1 = mp3.id3v1.expect("un tag ID3v1 était présent en fin de fichier");
+    let id3v1 = mp3
+        .id3v1
+        .expect("un tag ID3v1 était présent en fin de fichier");
 
     assert_eq!(id3v1.title, "Hi");
     assert_eq!(id3v1.track, Some(7));
@@ -257,7 +259,9 @@ fn test_id3v1_and_id3v2_display_align_shared_fields_line_by_line() {
             .unwrap_or_else(|| panic!("champ {label:?} introuvable dans {text:?}"))
     };
 
-    for label in ["Title", "Artist", "Album", "Year", "Comment", "Track", "Genre"] {
+    for label in [
+        "Title", "Artist", "Album", "Year", "Comment", "Track", "Genre",
+    ] {
         assert_eq!(
             line_of(&id3v2_text, label),
             line_of(&id3v1_text, label),

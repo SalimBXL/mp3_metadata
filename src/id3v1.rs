@@ -66,7 +66,11 @@ impl Id3v1Tag {
         let index = self.genre as usize;
         GENRES
             .get(index)
-            .or_else(|| index.checked_sub(GENRES.len()).and_then(|i| WINAMP_EXTRA_GENRES.get(i)))
+            .or_else(|| {
+                index
+                    .checked_sub(GENRES.len())
+                    .and_then(|i| WINAMP_EXTRA_GENRES.get(i))
+            })
             .copied()
     }
 }
