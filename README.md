@@ -11,6 +11,7 @@ Une bibliothèque Rust pour lire les métadonnées d'un fichier MP3 : tag ID3v2 
 - Gestion d'erreurs typée via l'enum `Mp3Error`, plutôt que des chaînes de caractères génériques.
 - Affichage lisible (`Display`) pour `Mp3File`, `Id3v2Tag`, `Frame` et `Id3v1Tag` — le CLI affiche ce dernier à droite du tag ID3v2 lorsque les deux sont présents.
 - Vérification en ligne (feature `verify`, activée par défaut) des métadonnées locales auprès de MusicBrainz (`--verify`), en combinant une recherche par morceau et, si le tag local a un album, une recherche ciblée sur cet album — pensée pour les titres très repris en concert ou très réédités, où la première seule ne suffit pas (voir `src/verify.rs`).
+- Durée audio exacte quand la première frame porte un en-tête Xing/Info ou VBRI (calculée à partir du nombre de frames déclaré, plutôt qu'estimée à débit constant), avec débit moyen réel quand la taille du flux est connue — un `~` précède la durée dans l'affichage quand elle n'est qu'estimée (voir `src/mpeg.rs`).
 
 ## Installation
 
@@ -125,6 +126,7 @@ Chaque fonction de parsing (`read_tag`, `read_frame`, `decode_frame`, `decode_st
 - En ID3v2.2, la frame `PIC` (équivalent d'`APIC`) code le format d'image sur 3 lettres (`JPG`, `PNG`, ...) plutôt qu'une chaîne MIME terminée par un nul : sur un tag v2.2, `mime_type` et `description` seront mal découpés. Ce cas n'est pas géré (voir `FrameContent::Picture`).
 - `Id3v1Tag::genre_name()` ne couvre que les 80 genres d'origine de la spécification ID3v1 (index 0 à 79) ; les extensions ultérieures (Winamp et autres) ne sont pas mappées. L'« ID3v1 Extended » (`TAG+`, 227 octets) n'est pas reconnu non plus.
 - `Mp3File` ne charge les données audio du fichier que sur demande explicite (`read_mp3_file_with_audio`).
+- La durée exacte (Xing/Info/VBRI) ne retranche pas le délai et le padding que certains encodeurs (LAME) ajoutent pour un décodage "gapless" (quelques dizaines de millisecondes). Sans aucun des deux en-têtes, la durée retombe sur une estimation à débit constant, potentiellement fausse pour un fichier VBR (l'affichage le signale par un `~`).
 
 ## Licence
 

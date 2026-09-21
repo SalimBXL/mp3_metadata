@@ -263,9 +263,9 @@ fn read_mp3_file_impl(
         .read_to_end(&mut probe)
         .map_err(read_failed)?;
 
-    let audio_format = mpeg::find_frame_header(&probe).map(|(_offset, header)| {
+    let audio_format = mpeg::find_frame_header(&probe).map(|(offset, header)| {
         let audio_bytes = size.saturating_sub(audio_start) as u64;
-        AudioFormat::from_header_and_audio_bytes(header, audio_bytes)
+        AudioFormat::from_probe(&probe, offset, header, audio_bytes)
     });
 
     // Le tag ID3v1 (s'il existe) occupe toujours les 128 derniers octets
