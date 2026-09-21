@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Exemple de sortie (`cargo run -- musique/chanson.mp3`) :
 
-```
+```text
 MP3
 ────────────────────────────────────
 File       : musique/chanson.mp3
@@ -78,7 +78,7 @@ côte ; les champs propres à ID3v2 (`Album Artist`, `Cover`) suivent sans
 
 ## Structure du projet
 
-```
+```text
 src/
 ├── lib.rs          # API publique : Mp3File, read_mp3_file, read_mp3_file_with_audio
 ├── error.rs        # Enum Mp3Error et ses implémentations Display / Error
