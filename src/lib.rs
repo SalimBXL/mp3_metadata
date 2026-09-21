@@ -209,15 +209,7 @@ fn read_mp3_file_impl(
     include_audio: bool,
 ) -> Result<Mp3File, Mp3Error> {
     let path = mp3_file.as_ref();
-
-    if !mp3_file_exists(path)? {
-        return Err(Mp3Error::NotFound(path.to_path_buf()));
-    }
-
-    let mut file = File::open(path).map_err(|source| Mp3Error::ReadFailed {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let mut file = open_mp3_file(path)?;
     let read_failed = |source: io::Error| Mp3Error::ReadFailed {
         path: path.to_path_buf(),
         source,
@@ -231,7 +223,52 @@ fn read_mp3_file_impl(
     let mut header = [0u8; ID3V2_HEADER_LEN];
     file.read_exact(&mut header).map_err(read_failed)?;
 
-    let (id3v2, audio_start, had_tag) = match id3::header::declared_tag_body_size(&header) {
+    let (id3v2, audio_start, had_tag) = read_id3v2_tag(&mut file, path, &header, size)?;
+    let probe = probe_audio_window(&mut file, path, &header, had_tag)?;
+    let audio_format = detect_audio_format(&probe, size, audio_start);
+    let id3v1 = read_id3v1_tag_if_present(&mut file, path, size)?;
+    let audio = read_audio_if_requested(&mut file, path, include_audio, audio_start)?;
+
+    Ok(Mp3File {
+        path: path.to_path_buf(),
+        size,
+        id3v2,
+        audio_format,
+        id3v1,
+        audio,
+    })
+}
+
+/// Vérifie que `path` existe et a l'extension `.mp3` (voir
+/// [`mp3_file_exists`]), puis l'ouvre.
+fn open_mp3_file(path: &Path) -> Result<File, Mp3Error> {
+    if !mp3_file_exists(path)? {
+        return Err(Mp3Error::NotFound(path.to_path_buf()));
+    }
+
+    File::open(path).map_err(|source| Mp3Error::ReadFailed {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Lit le tag ID3v2 en tête du fichier, s'il y en a un — `header` est
+/// l'en-tête de 10 octets déjà lu par l'appelant. Renvoie aussi l'offset
+/// où commencent les données audio et si un tag a effectivement été
+/// trouvé, nécessaires respectivement à [`detect_audio_format`],
+/// [`read_audio_if_requested`] et [`probe_audio_window`].
+fn read_id3v2_tag(
+    file: &mut File,
+    path: &Path,
+    header: &[u8; ID3V2_HEADER_LEN],
+    size: usize,
+) -> Result<(Option<Id3v2Tag>, usize, bool), Mp3Error> {
+    let read_failed = |source: io::Error| Mp3Error::ReadFailed {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    match id3::header::declared_tag_body_size(header) {
         Some(body_size) => {
             let tag_len = ID3V2_HEADER_LEN + body_size as usize;
             if tag_len > size {
@@ -242,20 +279,34 @@ fn read_mp3_file_impl(
             }
 
             let mut tag_data = vec![0u8; tag_len];
-            tag_data[..ID3V2_HEADER_LEN].copy_from_slice(&header);
+            tag_data[..ID3V2_HEADER_LEN].copy_from_slice(header);
             file.read_exact(&mut tag_data[ID3V2_HEADER_LEN..])
                 .map_err(read_failed)?;
-            (read_tag(&tag_data)?, tag_len, true)
+            Ok((read_tag(&tag_data)?, tag_len, true))
         }
-        None => (None, 0, false),
+        None => Ok((None, 0, false)),
+    }
+}
+
+/// Sonde une fenêtre d'octets juste après le tag ID3v2 (ou depuis le tout
+/// début du fichier s'il n'y en a pas, `had_tag` valant alors `false`) à
+/// la recherche de la première frame MPEG valide (voir
+/// [`detect_audio_format`]) — quelques Ko (voir [`MPEG_PROBE_LEN`])
+/// suffisent, pas besoin de lire les données audio en entier pour en
+/// connaître le format. Si le fichier n'a pas de tag, les 10 octets déjà
+/// lus dans `header` font partie de l'audio et doivent être inclus dans
+/// la fenêtre sondée.
+fn probe_audio_window(
+    file: &mut File,
+    path: &Path,
+    header: &[u8; ID3V2_HEADER_LEN],
+    had_tag: bool,
+) -> Result<Vec<u8>, Mp3Error> {
+    let read_failed = |source: io::Error| Mp3Error::ReadFailed {
+        path: path.to_path_buf(),
+        source,
     };
 
-    // Sonde une fenêtre d'octets juste après le tag (ou depuis le tout
-    // début du fichier s'il n'y en a pas) à la recherche de la première
-    // frame MPEG valide — quelques Ko suffisent, pas besoin de lire les
-    // données audio en entier pour en connaître le format. Si le fichier
-    // n'a pas de tag, les 10 octets déjà lus dans `header` font partie de
-    // l'audio et doivent être inclus dans la fenêtre sondée.
     let mut probe = if had_tag { Vec::new() } else { header.to_vec() };
     let remaining_probe_len = MPEG_PROBE_LEN.saturating_sub(probe.len());
     file.by_ref()
@@ -263,44 +314,69 @@ fn read_mp3_file_impl(
         .read_to_end(&mut probe)
         .map_err(read_failed)?;
 
-    let audio_format = mpeg::find_frame_header(&probe).map(|(offset, header)| {
+    Ok(probe)
+}
+
+/// Déduit le format audio de la fenêtre sondée (voir
+/// [`probe_audio_window`]), si elle contient une frame MPEG valide.
+fn detect_audio_format(probe: &[u8], size: usize, audio_start: usize) -> Option<AudioFormat> {
+    mpeg::find_frame_header(probe).map(|(offset, header)| {
         let audio_bytes = size.saturating_sub(audio_start) as u64;
-        AudioFormat::from_probe(&probe, offset, header, audio_bytes)
-    });
-
-    // Le tag ID3v1 (s'il existe) occupe toujours les 128 derniers octets
-    // du fichier, indépendamment du tag ID3v2 lu plus haut : une seule
-    // petite lecture ciblée par la fin, jamais le fichier entier.
-    let id3v1 = if size >= id3v1::ID3V1_LEN {
-        file.seek(SeekFrom::End(-(id3v1::ID3V1_LEN as i64)))
-            .map_err(read_failed)?;
-        let mut tail = [0u8; id3v1::ID3V1_LEN];
-        file.read_exact(&mut tail).map_err(read_failed)?;
-        read_id3v1_tag(&tail)
-    } else {
-        None
-    };
-
-    let audio = if include_audio {
-        // La sonde a déjà avancé le curseur au-delà du début de l'audio :
-        // revenir en arrière pour ne rien perdre du début du flux.
-        file.seek(SeekFrom::Start(audio_start as u64))
-            .map_err(read_failed)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data).map_err(read_failed)?;
-        Some(MpegAudio { data })
-    } else {
-        None
-    };
-
-    Ok(Mp3File {
-        path: path.to_path_buf(),
-        size,
-        id3v2,
-        audio_format,
-        id3v1,
-        audio,
+        AudioFormat::from_probe(probe, offset, header, audio_bytes)
     })
+}
+
+/// Lit le tag ID3v1 (s'il existe) dans les 128 derniers octets du
+/// fichier, indépendamment du tag ID3v2 — voir [`id3v1::read_id3v1_tag`].
+fn read_id3v1_tag_if_present(
+    file: &mut File,
+    path: &Path,
+    size: usize,
+) -> Result<Option<Id3v1Tag>, Mp3Error> {
+    let read_failed = |source: io::Error| Mp3Error::ReadFailed {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    if size < id3v1::ID3V1_LEN {
+        return Ok(None);
+    }
+
+    file.seek(SeekFrom::End(-(id3v1::ID3V1_LEN as i64)))
+        .map_err(read_failed)?;
+    let mut tail = [0u8; id3v1::ID3V1_LEN];
+    file.read_exact(&mut tail).map_err(read_failed)?;
+
+    Ok(read_id3v1_tag(&tail))
+}
+
+/// Charge les données audio (tout ce qui suit le tag ID3v2) si
+/// `include_audio` est vrai (voir [`read_mp3_file_with_audio`]) ; `None`
+/// sinon, sans rien lire. `audio_start` permet de revenir au tout début
+/// du flux audio : les sondes précédentes ([`probe_audio_window`],
+/// [`read_id3v1_tag_if_present`]) ont déplacé le curseur ailleurs dans le
+/// fichier.
+fn read_audio_if_requested(
+    file: &mut File,
+    path: &Path,
+    include_audio: bool,
+    audio_start: usize,
+) -> Result<Option<MpegAudio>, Mp3Error> {
+    let read_failed = |source: io::Error| Mp3Error::ReadFailed {
+        path: path.to_path_buf(),
+        source,
+    };
+
+    if !include_audio {
+        return Ok(None);
+    }
+
+    file.seek(SeekFrom::Start(audio_start as u64))
+        .map_err(read_failed)?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).map_err(read_failed)?;
+
+    Ok(Some(MpegAudio { data }))
 }
 
 //

@@ -128,6 +128,10 @@ Chaque fonction de parsing (`read_tag`, `read_frame`, `decode_frame`, `decode_st
 - `Mp3File` ne charge les données audio du fichier que sur demande explicite (`read_mp3_file_with_audio`).
 - La durée exacte (Xing/Info/VBRI) ne retranche pas le délai et le padding que certains encodeurs (LAME) ajoutent pour un décodage "gapless" (quelques dizaines de millisecondes). Sans aucun des deux en-têtes, la durée retombe sur une estimation à débit constant, potentiellement fausse pour un fichier VBR (l'affichage le signale par un `~`).
 
+## Changelog
+
+Les modifications notables sont documentées dans [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Licence
 
 À définir.
