@@ -1,6 +1,14 @@
 use crate::error::Mp3Error;
 use crate::id3::header::Id3Version;
-use crate::id3::synchsafe_to_u32;
+use crate::id3::{deunsynchronize, synchsafe_to_u32};
+use std::borrow::Cow;
+
+/// Bit "Unsynchronisation" des format flags d'une frame ID3v2.4 (octet
+/// bas des deux octets de [`Frame::flags`]) — voir
+/// [`read_frame_v2_3_or_later`]. N'existe qu'en ID3v2.4 ; ID3v2.3 n'a pas
+/// cette option par frame, seule l'unsynchronisation globale du tag (voir
+/// [`crate::id3::deunsynchronize`]) y est possible.
+const FRAME_UNSYNCHRONISATION_FLAG: u16 = 0x0002;
 
 /// Contenu décodé d'une frame ID3v2.
 ///
@@ -210,7 +218,21 @@ fn map_v2_2_id(id: [u8; 3]) -> [u8; 4] {
 /// - **ID3v2.4** (`major >= 4`) : en-tête de 10 octets, mais la taille est
 ///   un entier *synchsafe* (voir [`synchsafe_to_u32`]) — un fichier v2.4
 ///   lu avec un décodage brut aurait une frame sur deux mal découpée dès
-///   que sa taille dépasse 127 octets.
+///   que sa taille dépasse 127 octets. Version qui introduit aussi
+///   l'unsynchronisation propre à une frame individuelle (voir
+///   [`FRAME_UNSYNCHRONISATION_FLAG`]), retirée ici avant décodage — en
+///   plus de celle du tag entier (voir [`crate::id3::deunsynchronize`]),
+///   la seule qu'ID3v2.3 connaisse.
+///
+/// `tag_already_unsynced` indique si l'appelant a déjà retiré
+/// l'unsynchronisation globale du tag ([`crate::id3::deunsynchronize`])
+/// avant d'appeler cette fonction : si c'est le cas, ce corps de frame est
+/// déjà propre, et le bit d'unsynchronisation propre à la frame — même
+/// posé — n'est alors plus consulté, pour ne pas appliquer
+/// [`deunsynchronize`] une seconde fois sur des octets déjà nettoyés
+/// (l'opération n'est pas idempotente : une vraie séquence `0xFF 0x00`
+/// légitimement présente dans le contenu déjà propre serait tronquée par
+/// erreur).
 ///
 /// # Retour
 ///
@@ -231,17 +253,17 @@ pub fn read_frame(
     id3_data: &[u8],
     offset: usize,
     version: Id3Version,
+    tag_already_unsynced: bool,
 ) -> Result<Option<Frame>, Mp3Error> {
     match version.major {
         0 | 1 => Err(Mp3Error::UnsupportedVersion {
             major: version.major,
         }),
         2 => read_frame_v2_2(id3_data, offset),
-        3 => read_frame_v2_3_or_later(id3_data, offset, false),
-        _ => read_frame_v2_3_or_later(id3_data, offset, true),
+        3 => read_frame_v2_3_or_later(id3_data, offset, false, tag_already_unsynced),
+        _ => read_frame_v2_3_or_later(id3_data, offset, true, tag_already_unsynced),
     }
 }
-
 /// Lit une frame au format ID3v2.2 : en-tête de 6 octets, sans flags.
 fn read_frame_v2_2(id3_data: &[u8], offset: usize) -> Result<Option<Frame>, Mp3Error> {
     let header_end = offset
@@ -286,11 +308,16 @@ fn read_frame_v2_2(id3_data: &[u8], offset: usize) -> Result<Option<Frame>, Mp3E
 }
 
 /// Lit une frame au format ID3v2.3 ou ID3v2.4 : en-tête de 10 octets.
-/// `synchsafe_size` sélectionne le décodage de taille approprié.
+/// `is_v2_4_or_later` sélectionne le décodage de taille approprié (entier
+/// synchsafe ou brut) et détermine si le bit
+/// [`FRAME_UNSYNCHRONISATION_FLAG`] doit être consulté (propre à
+/// ID3v2.4). `tag_already_unsynced` désactive cette consultation même
+/// s'il est posé — voir [`read_frame`].
 fn read_frame_v2_3_or_later(
     id3_data: &[u8],
     offset: usize,
-    synchsafe_size: bool,
+    is_v2_4_or_later: bool,
+    tag_already_unsynced: bool,
 ) -> Result<Option<Frame>, Mp3Error> {
     let header_end = offset
         .checked_add(10)
@@ -311,7 +338,7 @@ fn read_frame_v2_3_or_later(
     let size_bytes: [u8; 4] = id3_data[offset + 4..offset + 8]
         .try_into()
         .expect("slice de 4 octets, conversion infaillible");
-    let size = if synchsafe_size {
+    let size = if is_v2_4_or_later {
         synchsafe_to_u32(size_bytes)
     } else {
         u32::from_be_bytes(size_bytes)
@@ -331,7 +358,22 @@ fn read_frame_v2_3_or_later(
             available: id3_data.len(),
         })?;
 
-    let content = decode_frame(&frame_id, &id3_data[header_end..frame_end])?;
+    let raw_frame_data = &id3_data[header_end..frame_end];
+
+    // Unsynchronisation propre à cette frame (ID3v2.4 uniquement — voir
+    // FRAME_UNSYNCHRONISATION_FLAG) : ne s'applique que si le tag entier
+    // n'a pas déjà été désunsynchronisé plus haut (voir la doc de
+    // `read_frame` pour pourquoi appliquer les deux serait incorrect,
+    // pas seulement redondant).
+    let should_deunsync =
+        !tag_already_unsynced && is_v2_4_or_later && flags & FRAME_UNSYNCHRONISATION_FLAG != 0;
+    let frame_data: Cow<[u8]> = if should_deunsync {
+        Cow::Owned(deunsynchronize(raw_frame_data))
+    } else {
+        Cow::Borrowed(raw_frame_data)
+    };
+
+    let content = decode_frame(&frame_id, &frame_data)?;
 
     Ok(Some(Frame {
         id: frame_id,
@@ -935,7 +977,7 @@ mod tests {
     fn test_read_frame_unsupported_version_returns_err() {
         let data = [0u8; 20];
         assert!(matches!(
-            read_frame(&data, 0, Id3Version { major: 1, minor: 0 }),
+            read_frame(&data, 0, Id3Version { major: 1, minor: 0 }, false),
             Err(Mp3Error::UnsupportedVersion { major: 1 })
         ));
     }
@@ -954,6 +996,12 @@ mod tests {
     /// Comme `build_frame_bytes_v2_3`, mais encode la taille en synchsafe,
     /// pour tester la lecture v2.4.
     fn build_frame_bytes_v2_4(id: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        build_frame_bytes_v2_4_with_flags(id, 0, body)
+    }
+
+    /// Comme `build_frame_bytes_v2_4`, avec des flags de frame explicites
+    /// (ex. [`FRAME_UNSYNCHRONISATION_FLAG`]) plutôt que toujours 0.
+    fn build_frame_bytes_v2_4_with_flags(id: &[u8; 4], flags: u16, body: &[u8]) -> Vec<u8> {
         let size = body.len() as u32;
         let synchsafe = [
             ((size >> 21) & 0x7F) as u8,
@@ -964,7 +1012,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(id);
         data.extend_from_slice(&synchsafe);
-        data.extend_from_slice(&[0, 0]);
+        data.extend_from_slice(&flags.to_be_bytes());
         data.extend_from_slice(body);
         data
     }
@@ -978,7 +1026,7 @@ mod tests {
     #[test]
     fn test_read_frame_v2_3_valid_decodes_content() {
         let data = build_frame_bytes_v2_3(b"TIT2", &text_body("Hello"));
-        let frame = read_frame(&data, 0, V2_3).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_3, false).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TIT2");
         assert_eq!(frame.size, 6);
@@ -991,7 +1039,7 @@ mod tests {
         let mut data = vec![0xAA; 20];
         data.extend(build_frame_bytes_v2_3(b"TPE1", &text_body("Queen")));
 
-        let frame = read_frame(&data, 20, V2_3).unwrap().unwrap();
+        let frame = read_frame(&data, 20, V2_3, false).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TPE1");
         assert_eq!(frame.offset, 20);
@@ -1001,7 +1049,7 @@ mod tests {
     #[test]
     fn test_read_frame_v2_3_zero_size_body() {
         let data = build_frame_bytes_v2_3(b"TCON", b"");
-        let frame = read_frame(&data, 0, V2_3).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_3, false).unwrap().unwrap();
 
         assert_eq!(frame.size, 0);
         assert_eq!(frame.content, FrameContent::Empty);
@@ -1014,7 +1062,7 @@ mod tests {
         // taille brute divergent. En v2.3, la taille est brute.
         let body = vec![0u8; 200];
         let data = build_frame_bytes_v2_3(b"APIC", &body);
-        let frame = read_frame(&data, 0, V2_3).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_3, false).unwrap().unwrap();
 
         assert_eq!(frame.size, 200);
         assert_eq!(frame.next_offset, 10 + 200);
@@ -1026,7 +1074,7 @@ mod tests {
         // la frame serait mal découpée.
         let body = vec![0u8; 200];
         let data = build_frame_bytes_v2_4(b"APIC", &body);
-        let frame = read_frame(&data, 0, V2_4).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_4, false).unwrap().unwrap();
 
         assert_eq!(frame.size, 200);
         assert_eq!(frame.next_offset, 10 + 200);
@@ -1039,18 +1087,103 @@ mod tests {
         let data_v3 = build_frame_bytes_v2_3(b"TIT2", &text_body("Hi"));
         let data_v4 = build_frame_bytes_v2_4(b"TIT2", &text_body("Hi"));
 
-        let frame_v3 = read_frame(&data_v3, 0, V2_3).unwrap().unwrap();
-        let frame_v4 = read_frame(&data_v4, 0, V2_4).unwrap().unwrap();
+        let frame_v3 = read_frame(&data_v3, 0, V2_3, false).unwrap().unwrap();
+        let frame_v4 = read_frame(&data_v4, 0, V2_4, false).unwrap().unwrap();
 
         assert_eq!(frame_v3.size, frame_v4.size);
         assert_eq!(frame_v3.content, frame_v4.content);
+    }
+
+    // ----- read_frame : unsynchronisation propre à une frame (ID3v2.4) -----
+    //
+    // Un identifiant de frame non reconnu (`XTST`) est utilisé plutôt
+    // qu'une frame texte : `FrameContent::Unknown` conserve les octets
+    // tels quels, sans le découpage sur terminateur nul qu'appliquerait
+    // `decode_text_values` — ce qui rendrait la présence ou l'absence du
+    // bourrage plus difficile à distinguer directement sur les octets.
+
+    /// Corps de frame contenant un `0xFF` suivi d'un octet nul « vrai » —
+    /// ce qui, une fois unsynchronisé, aurait été stocké avec un `0x00`
+    /// de bourrage inséré juste après le `0xFF` (voir `deunsynchronize`).
+    /// `stuffed` choisit laquelle des deux formes (stockée ou déjà propre)
+    /// est produite.
+    fn raw_body_with_ff_00(stuffed: bool) -> Vec<u8> {
+        if stuffed {
+            vec![0xFF, 0x00, 0x00, b'A'] // stocké : FF, bourrage, vrai 00, 'A'
+        } else {
+            vec![0xFF, 0x00, b'A'] // déjà propre : FF, vrai 00, 'A'
+        }
+    }
+
+    #[test]
+    fn test_read_frame_v2_4_removes_frame_level_unsynchronisation() {
+        let data = build_frame_bytes_v2_4_with_flags(
+            b"XTST",
+            FRAME_UNSYNCHRONISATION_FLAG,
+            &raw_body_with_ff_00(true), // stocké : FF 00 00 41
+        );
+
+        let frame = read_frame(&data, 0, V2_4, false).unwrap().unwrap();
+
+        // Ramené à FF 00 41 : le bourrage a bien été retiré.
+        assert_eq!(frame.content, FrameContent::Unknown(vec![0xFF, 0x00, b'A']));
+    }
+
+    #[test]
+    fn test_read_frame_v2_4_without_the_flag_keeps_raw_bytes() {
+        // Mêmes octets stockés, mais sans le bit d'unsynchronisation :
+        // aucun retrait ne doit avoir lieu.
+        let data = build_frame_bytes_v2_4_with_flags(
+            b"XTST",
+            0,
+            &raw_body_with_ff_00(true), // FF 00 00 41, laissé tel quel
+        );
+
+        let frame = read_frame(&data, 0, V2_4, false).unwrap().unwrap();
+
+        assert_eq!(
+            frame.content,
+            FrameContent::Unknown(vec![0xFF, 0x00, 0x00, b'A'])
+        );
+    }
+
+    #[test]
+    fn test_read_frame_v2_3_ignores_the_v2_4_only_flag_bit() {
+        // Même motif de bits que FRAME_UNSYNCHRONISATION_FLAG, mais en
+        // v2.3 où ce bit n'existe pas : ne doit rien déclencher.
+        let mut data = build_frame_bytes_v2_3(b"XTST", &raw_body_with_ff_00(true));
+        data[9] = FRAME_UNSYNCHRONISATION_FLAG as u8; // octet bas des flags v2.3
+
+        let frame = read_frame(&data, 0, V2_3, false).unwrap().unwrap();
+
+        assert_eq!(
+            frame.content,
+            FrameContent::Unknown(vec![0xFF, 0x00, 0x00, b'A'])
+        );
+    }
+
+    #[test]
+    fn test_read_frame_v2_4_skips_frame_flag_when_tag_already_unsynced() {
+        // Le tag entier a déjà été désunsynchronisé par l'appelant (voir
+        // `read_tag`) : le corps est donc déjà propre (FF 00 41, pas de
+        // bourrage supplémentaire), même si le bit de la frame est posé.
+        // Le consulter quand même couperait à tort le 0x00 légitime.
+        let data = build_frame_bytes_v2_4_with_flags(
+            b"XTST",
+            FRAME_UNSYNCHRONISATION_FLAG,
+            &raw_body_with_ff_00(false), // déjà propre : FF 00 41
+        );
+
+        let frame = read_frame(&data, 0, V2_4, true).unwrap().unwrap();
+
+        assert_eq!(frame.content, FrameContent::Unknown(vec![0xFF, 0x00, b'A']));
     }
 
     #[test]
     fn test_read_frame_propagates_decode_error() {
         let data = build_frame_bytes_v2_3(b"TIT2", &[9, b'H', b'i']);
         assert!(matches!(
-            read_frame(&data, 0, V2_3),
+            read_frame(&data, 0, V2_3, false),
             Err(Mp3Error::UnknownTextEncoding { encoding: 9 })
         ));
     }
@@ -1059,7 +1192,7 @@ mod tests {
     fn test_read_frame_v2_3_too_short_for_header() {
         let data = [0u8; 5];
         assert!(matches!(
-            read_frame(&data, 0, V2_3),
+            read_frame(&data, 0, V2_3, false),
             Err(Mp3Error::FrameTooShort { offset: 0 })
         ));
     }
@@ -1068,7 +1201,7 @@ mod tests {
     fn test_read_frame_v2_3_exactly_too_short() {
         let data = [0u8; 9];
         assert!(matches!(
-            read_frame(&data, 0, V2_3),
+            read_frame(&data, 0, V2_3, false),
             Err(Mp3Error::FrameTooShort { offset: 0 })
         ));
     }
@@ -1076,7 +1209,7 @@ mod tests {
     #[test]
     fn test_read_frame_v2_3_padding_returns_none() {
         let data = [0u8; 10];
-        assert!(read_frame(&data, 0, V2_3).unwrap().is_none());
+        assert!(read_frame(&data, 0, V2_3, false).unwrap().is_none());
     }
 
     #[test]
@@ -1085,7 +1218,7 @@ mod tests {
         data.truncate(15);
 
         assert!(matches!(
-            read_frame(&data, 0, V2_3),
+            read_frame(&data, 0, V2_3, false),
             Err(Mp3Error::FrameSizeOverflow { offset: 0, .. })
         ));
     }
@@ -1095,7 +1228,7 @@ mod tests {
         let data = build_frame_bytes_v2_3(b"TIT2", &text_body("Hello"));
         let offset = data.len();
         assert!(matches!(
-            read_frame(&data, offset, V2_3),
+            read_frame(&data, offset, V2_3, false),
             Err(Mp3Error::FrameTooShort { .. })
         ));
     }
@@ -1104,7 +1237,7 @@ mod tests {
     fn test_read_frame_v2_3_offset_overflow_does_not_panic() {
         let data = [0u8; 20];
         assert!(matches!(
-            read_frame(&data, usize::MAX - 5, V2_3),
+            read_frame(&data, usize::MAX - 5, V2_3, false),
             Err(Mp3Error::FrameTooShort { .. })
         ));
     }
@@ -1116,7 +1249,7 @@ mod tests {
         data[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
 
         assert!(matches!(
-            read_frame(&data, usize::MAX - 20, V2_3),
+            read_frame(&data, usize::MAX - 20, V2_3, false),
             Err(Mp3Error::FrameTooShort { .. })
         ));
     }
@@ -1135,7 +1268,7 @@ mod tests {
     #[test]
     fn test_read_frame_v2_2_maps_known_id_and_decodes_content() {
         let data = build_frame_bytes_v2_2(b"TT2", &text_body("Hello"));
-        let frame = read_frame(&data, 0, V2_2).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_2, false).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TIT2");
         assert_eq!(frame.size, 6);
@@ -1147,7 +1280,7 @@ mod tests {
     #[test]
     fn test_read_frame_v2_2_unmapped_id_kept_as_padded_id() {
         let data = build_frame_bytes_v2_2(b"XYZ", &[1, 2, 3]);
-        let frame = read_frame(&data, 0, V2_2).unwrap().unwrap();
+        let frame = read_frame(&data, 0, V2_2, false).unwrap().unwrap();
 
         assert_eq!(&frame.id, &[b'X', b'Y', b'Z', 0]);
         assert_eq!(frame.content, FrameContent::Unknown(vec![1, 2, 3]));
@@ -1156,14 +1289,14 @@ mod tests {
     #[test]
     fn test_read_frame_v2_2_padding_returns_none() {
         let data = [0u8; 6];
-        assert!(read_frame(&data, 0, V2_2).unwrap().is_none());
+        assert!(read_frame(&data, 0, V2_2, false).unwrap().is_none());
     }
 
     #[test]
     fn test_read_frame_v2_2_too_short_for_header() {
         let data = [0u8; 5];
         assert!(matches!(
-            read_frame(&data, 0, V2_2),
+            read_frame(&data, 0, V2_2, false),
             Err(Mp3Error::FrameTooShort { offset: 0 })
         ));
     }
@@ -1174,7 +1307,7 @@ mod tests {
         data.truncate(10);
 
         assert!(matches!(
-            read_frame(&data, 0, V2_2),
+            read_frame(&data, 0, V2_2, false),
             Err(Mp3Error::FrameSizeOverflow { offset: 0, .. })
         ));
     }
@@ -1184,7 +1317,7 @@ mod tests {
         let mut data = vec![0xAA; 12];
         data.extend(build_frame_bytes_v2_2(b"TP1", &text_body("Queen")));
 
-        let frame = read_frame(&data, 12, V2_2).unwrap().unwrap();
+        let frame = read_frame(&data, 12, V2_2, false).unwrap().unwrap();
 
         assert_eq!(&frame.id, b"TPE1");
         assert_eq!(frame.offset, 12);
