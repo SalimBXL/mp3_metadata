@@ -7,7 +7,7 @@ Une bibliothèque Rust pour lire les métadonnées d'un fichier MP3 : tag ID3v2 
 - Vérification qu'un chemin pointe vers un fichier `.mp3` existant.
 - Lecture d'un fichier MP3 et extraction de son tag ID3v2 complet, en-tête et frames déjà décodées (`read_mp3_file`).
 - Lecture du tag ID3v1 / ID3v1.1 situé dans les 128 derniers octets du fichier, indépendamment du tag ID3v2.
-- Décodage du contenu des frames texte (`TIT2`, `TPE1`, `TPE2`, `TALB`, `TRCK`, `TCON`), en respectant l'octet d'encoding ID3v2 (ISO-8859-1, UTF-16 avec BOM, UTF-16BE, UTF-8).
+- Décodage du contenu des frames texte (`TIT2`, `TPE1`, `TPE2`, `TALB`, `TRCK`, `TCON`), en respectant l'octet d'encoding ID3v2 (ISO-8859-1, UTF-16 avec BOM, UTF-16BE, UTF-8). Gère aussi bien l'unsynchronisation globale du tag (toutes versions) que celle propre à une frame individuelle (ID3v2.4 uniquement).
 - Gestion d'erreurs typée via l'enum `Mp3Error`, plutôt que des chaînes de caractères génériques.
 - Affichage lisible (`Display`) pour `Mp3File`, `Id3v2Tag`, `Frame` et `Id3v1Tag` — le CLI affiche ce dernier à droite du tag ID3v2 lorsque les deux sont présents.
 - Vérification en ligne (feature `verify`, activée par défaut) des métadonnées locales auprès de MusicBrainz (`--verify`), en combinant une recherche par morceau et, si le tag local a un album, une recherche ciblée sur cet album — pensée pour les titres très repris en concert ou très réédités, où la première seule ne suffit pas (voir `src/verify.rs`).

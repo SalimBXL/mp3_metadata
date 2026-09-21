@@ -228,10 +228,11 @@ pub(crate) fn declared_tag_body_size(header: &[u8; 10]) -> Option<u32> {
 ///
 /// # Limites connues
 ///
-/// L'unsynchronisation *par frame* (propre à ID3v2.4, indépendante du bit
-/// d'unsynchronisation de l'en-tête principal) n'est pas gérée. Le contenu
-/// de l'extended header (padding, CRC32) n'est pas exposé : il est
-/// seulement ignoré pour retrouver le début des frames.
+/// Le contenu de l'extended header (padding, CRC32) n'est pas exposé : il
+/// est seulement ignoré pour retrouver le début des frames. L'unsynchronisation
+/// propre à une frame individuelle (ID3v2.4, voir
+/// [`crate::id3::frame::read_frame`]) est en revanche gérée, séparément de
+/// celle de l'en-tête principal.
 ///
 /// # Exemples
 ///
@@ -277,7 +278,8 @@ pub fn read_tag(data: &[u8]) -> Result<Option<Id3v2Tag>, Mp3Error> {
     // L'unsynchronisation s'applique à tout le corps du tag : extended
     // header et frames compris. On la retire une bonne fois pour toutes
     // avant d'y chercher quoi que ce soit d'autre.
-    let body: Cow<[u8]> = if flags & UNSYNCHRONISATION_FLAG != 0 {
+    let tag_already_unsynced = flags & UNSYNCHRONISATION_FLAG != 0;
+    let body: Cow<[u8]> = if tag_already_unsynced {
         Cow::Owned(deunsynchronize(raw_body))
     } else {
         Cow::Borrowed(raw_body)
@@ -289,7 +291,7 @@ pub fn read_tag(data: &[u8]) -> Result<Option<Id3v2Tag>, Mp3Error> {
         0
     };
 
-    let frames = read_frames(&body, frames_start, version)?;
+    let frames = read_frames(&body, frames_start, version, tag_already_unsynced)?;
 
     Ok(Some(Id3v2Tag {
         version,
@@ -344,19 +346,28 @@ fn extended_header_len(body: &[u8], version: Id3Version) -> Result<usize, Mp3Err
 /// `body` est le corps du tag (après le retrait de l'en-tête principal, de
 /// l'unsynchronisation et de l'extended header éventuels) ; `start` est le
 /// décalage, dans `body`, auquel commence la première frame.
+/// `tag_already_unsynced` indique si `body` a déjà été désunsynchronisé
+/// dans son ensemble (voir [`deunsynchronize`]) : transmis tel quel à
+/// [`read_frame`], qui l'utilise pour savoir si le bit d'unsynchronisation
+/// propre à une frame individuelle (ID3v2.4) doit encore être consulté.
 ///
 /// La taille de l'en-tête de frame — 6 octets en ID3v2.2, 10 octets
 /// au-delà — détermine la borne d'arrêt de la boucle : en dessous de cette
 /// taille il ne peut plus y avoir de frame complète, et la lecture s'arrête
 /// sans erreur. Elle s'arrête aussi, normalement, dès que le padding de
 /// fin de tag est atteint (voir [`read_frame`]).
-fn read_frames(body: &[u8], start: usize, version: Id3Version) -> Result<Vec<Frame>, Mp3Error> {
+fn read_frames(
+    body: &[u8],
+    start: usize,
+    version: Id3Version,
+    tag_already_unsynced: bool,
+) -> Result<Vec<Frame>, Mp3Error> {
     let frame_header_len = if version.major == 2 { 6 } else { 10 };
     let mut offset = start;
     let mut frames = Vec::new();
 
     while offset + frame_header_len <= body.len() {
-        match read_frame(body, offset, version)? {
+        match read_frame(body, offset, version, tag_already_unsynced)? {
             Some(frame) => {
                 offset = frame.next_offset;
                 frames.push(frame);
