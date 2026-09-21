@@ -9,10 +9,11 @@
 //!
 //! # Portée volontairement limitée
 //!
-//! - Seule la table des 80 genres d'origine de la spécification ID3v1 est
-//!   reconnue ; les extensions ultérieures (Winamp et autres, qui montent
-//!   jusqu'à 191/192) ne sont pas mappées : [`Id3v1Tag::genre_name`] renvoie
-//!   `None` au-delà de l'index 79.
+//! - Les genres au-delà de l'index 191 (ni les 80 d'origine, ni
+//!   l'extension Winamp — voir [`Id3v1Tag::genre_name`]) n'ont pas de nom
+//!   dans cette bibliothèque : [`Id3v1Tag::genre_name`] renvoie `None`, et
+//!   l'affichage montre alors l'index brut suivi d'un `*` plutôt qu'un nom
+//!   (voir [`format_genre`]).
 //! - L'« ID3v1 Extended » (signature `TAG+` sur 227 octets, placée juste
 //!   avant le tag ID3v1 classique par certains anciens encodeurs pour
 //!   allonger titre/artiste/album) n'est pas reconnu : seul le tag ID3v1
@@ -55,11 +56,22 @@ pub struct Id3v1Tag {
 }
 
 impl Id3v1Tag {
-    /// Nom du genre, d'après la table des 80 genres d'origine de la
-    /// spécification ID3v1. `None` si l'index dépasse cette table (genre
-    /// non standard, ou extension ultérieure non reconnue ici).
+    /// Nom du genre, d'après soit la table des 80 genres d'origine de la
+    /// spécification ID3v1 (index 0 à 79), soit l'extension Winamp (index
+    /// 80 à 191, non officielle mais largement répandue — voir la portée
+    /// limitée en tête de module et [`format_genre`] pour comment
+    /// `Display` distingue les deux). `None` seulement au-delà de l'index
+    /// 191, où aucune des deux tables n'a de nom à proposer.
     pub fn genre_name(&self) -> Option<&'static str> {
-        GENRES.get(self.genre as usize).copied()
+        let index = self.genre as usize;
+        GENRES
+            .get(index)
+            .or_else(|| {
+                index
+                    .checked_sub(GENRES.len())
+                    .and_then(|i| WINAMP_EXTRA_GENRES.get(i))
+            })
+            .copied()
     }
 }
 
@@ -70,7 +82,8 @@ impl Id3v1Tag {
 /// pour un tag ID3v1 classique, plutôt que d'omettre la ligne : ID3v2
 /// affiche toujours ce champ (voir [`crate::Id3v2Tag`]), l'omettre ici
 /// décalerait `Genre` d'une ligne par rapport à son vis-à-vis dès qu'un
-/// tag n'a pas de numéro de piste.
+/// tag n'a pas de numéro de piste. Le genre est un cas particulier — voir
+/// [`format_genre`].
 impl fmt::Display for Id3v1Tag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ID3v1")?;
@@ -84,12 +97,41 @@ impl fmt::Display for Id3v1Tag {
             Some(track) => writeln!(f, "{:<11}: {track}", "Track")?,
             None => writeln!(f, "{:<11}: ?", "Track")?,
         }
-        write!(f, "{:<11}: {}", "Genre", self.genre_name().unwrap_or("?"))
+        write!(
+            f,
+            "{:<11}: {}",
+            "Genre",
+            format_genre(self.genre, self.genre_name())
+        )
     }
 }
 
 fn non_empty(s: &str) -> &str {
     if s.is_empty() { "?" } else { s }
+}
+
+/// Formate le genre pour l'affichage : son nom s'il en a un — table des
+/// 80 genres d'origine ou extension Winamp, voir [`Id3v1Tag::genre_name`]
+/// — suivi d'un `*` si ce nom vient de l'extension Winamp plutôt que des
+/// 80 d'origine ; sinon (aucun nom disponible, au-delà de l'index 191)
+/// l'index brut suivi d'un `*`. Dans les deux cas, le `*` signale donc la
+/// même chose : « hors de la spécification ID3v1 officielle », qu'un nom
+/// ait pu être trouvé ou non — pas la peine de le distinguer davantage
+/// pour l'affichage.
+fn format_genre(genre: u8, name: Option<&str>) -> String {
+    match (name, is_official_genre(genre)) {
+        (Some(name), true) => name.to_string(),
+        (Some(name), false) => format!("{name}*"),
+        (None, _) => format!("{genre}*"),
+    }
+}
+
+/// `true` si `genre` fait partie des 80 genres d'origine de la
+/// spécification ID3v1 (index 0 à 79) — par opposition à l'extension
+/// Winamp (80 à 191) ou à un index non reconnu du tout (au-delà de 191).
+/// Voir [`format_genre`].
+fn is_official_genre(genre: u8) -> bool {
+    (genre as usize) < GENRES.len()
 }
 
 /// Analyse un tag ID3v1 à partir des 128 derniers octets d'un fichier MP3.
@@ -233,6 +275,134 @@ const GENRES: [&str; 80] = [
     "Hard Rock",
 ];
 
+/// Extension Winamp de la table des genres ID3v1, indices 80 à 191 —
+/// non officielle (Winamp n'engageant que lui-même), mais largement
+/// reprise par d'autres lecteurs et bibliothèques au point d'être
+/// devenue un standard de fait. Index 0 de ce tableau = genre `80`.
+///
+/// Source : la documentation de `mutagen`
+/// (<https://mutagen-specs.readthedocs.io/en/latest/id3/id3v1-genres.html>),
+/// recoupée avec la page Wikipédia « List of ID3v1 genres ». D'autres
+/// listes en circulation diffèrent légèrement sur quelques entrées tardives
+/// (ex. l'index 133 est `"Afro-Punk"` ici, `"Negerpunk"` ailleurs) : Winamp
+/// a fait évoluer sa propre liste au fil de ses versions, sans qu'une
+/// source unique ne fasse autorité au-delà de la version 1.91 (indices 80
+/// à 147).
+const WINAMP_EXTRA_GENRES: [&str; 112] = [
+    "Folk",
+    "Folk-Rock",
+    "National Folk",
+    "Swing",
+    "Fast-Fusion",
+    "Bebop",
+    "Latin",
+    "Revival",
+    "Celtic",
+    "Bluegrass",
+    "Avantgarde",
+    "Gothic Rock",
+    "Progressive Rock",
+    "Psychedelic Rock",
+    "Symphonic Rock",
+    "Slow Rock",
+    "Big Band",
+    "Chorus",
+    "Easy Listening",
+    "Acoustic",
+    "Humour",
+    "Speech",
+    "Chanson",
+    "Opera",
+    "Chamber Music",
+    "Sonata",
+    "Symphony",
+    "Booty Bass",
+    "Primus",
+    "Porn Groove",
+    "Satire",
+    "Slow Jam",
+    "Club",
+    "Tango",
+    "Samba",
+    "Folklore",
+    "Ballad",
+    "Power Ballad",
+    "Rhythmic Soul",
+    "Freestyle",
+    "Duet",
+    "Punk Rock",
+    "Drum Solo",
+    "A Cappella",
+    "Euro-House",
+    "Dance Hall",
+    "Goa",
+    "Drum & Bass",
+    "Club-House",
+    "Hardcore",
+    "Terror",
+    "Indie",
+    "BritPop",
+    "Afro-Punk",
+    "Polsk Punk",
+    "Beat",
+    "Christian Gangsta Rap",
+    "Heavy Metal",
+    "Black Metal",
+    "Crossover",
+    "Contemporary Christian",
+    "Christian Rock",
+    "Merengue",
+    "Salsa",
+    "Thrash Metal",
+    "Anime",
+    "JPop",
+    "Synthpop",
+    "Abstract",
+    "Art Rock",
+    "Baroque",
+    "Bhangra",
+    "Big Beat",
+    "Breakbeat",
+    "Chillout",
+    "Downtempo",
+    "Dub",
+    "EBM",
+    "Eclectic",
+    "Electro",
+    "Electroclash",
+    "Emo",
+    "Experimental",
+    "Garage",
+    "Global",
+    "IDM",
+    "Illbient",
+    "Industro-Goth",
+    "Jam Band",
+    "Krautrock",
+    "Leftfield",
+    "Lounge",
+    "Math Rock",
+    "New Romantic",
+    "Nu-Breakz",
+    "Post-Punk",
+    "Post-Rock",
+    "Psytrance",
+    "Shoegaze",
+    "Space Rock",
+    "Trop Rock",
+    "World Music",
+    "Neoclassical",
+    "Audiobook",
+    "Audio Theatre",
+    "Neue Deutsche Welle",
+    "Podcast",
+    "Indie Rock",
+    "G-Funk",
+    "Dubstep",
+    "Garage Rock",
+    "Psybient",
+];
+
 //
 // ---------- TESTS ----------
 //
@@ -331,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_read_id3v1_tag_unknown_genre_index_has_no_name() {
-        let data = build_tag(b"", b"", b"", b"", b"", 255);
+        let data = build_tag(b"", b"", b"", b"", b"", 255); // au-delà de 191 : aucune table
         let tag = read_id3v1_tag(&data).unwrap();
 
         assert_eq!(tag.genre_name(), None);
@@ -343,6 +513,23 @@ mod tests {
         let tag = read_id3v1_tag(&data).unwrap();
 
         assert_eq!(tag.genre_name(), Some("Hard Rock"));
+    }
+
+    #[test]
+    fn test_read_id3v1_tag_winamp_extension_first_and_last_have_names() {
+        let first = read_id3v1_tag(&build_tag(b"", b"", b"", b"", b"", 80)).unwrap();
+        let last = read_id3v1_tag(&build_tag(b"", b"", b"", b"", b"", 191)).unwrap();
+
+        assert_eq!(first.genre_name(), Some("Folk"));
+        assert_eq!(last.genre_name(), Some("Psybient"));
+    }
+
+    #[test]
+    fn test_read_id3v1_tag_just_past_winamp_extension_has_no_name() {
+        let data = build_tag(b"", b"", b"", b"", b"", 192);
+        let tag = read_id3v1_tag(&data).unwrap();
+
+        assert_eq!(tag.genre_name(), None);
     }
 
     #[test]
@@ -380,5 +567,57 @@ mod tests {
         // La ligne reste présente (alignement avec ID3v2), mais avec un
         // placeholder plutôt qu'un vrai numéro de piste.
         assert!(tag.to_string().contains("Track      : ?"));
+    }
+
+    // ----- format_genre / is_official_genre -----
+
+    #[test]
+    fn test_format_genre_official_shows_name_without_asterisk() {
+        assert_eq!(format_genre(17, Some("Rock")), "Rock");
+    }
+
+    #[test]
+    fn test_format_genre_winamp_extension_shows_name_with_asterisk() {
+        assert_eq!(format_genre(145, Some("Anime")), "Anime*");
+    }
+
+    #[test]
+    fn test_format_genre_unrecognized_shows_index_with_asterisk() {
+        assert_eq!(format_genre(255, None), "255*");
+    }
+
+    #[test]
+    fn test_is_official_genre() {
+        assert!(is_official_genre(0));
+        assert!(is_official_genre(79));
+        assert!(!is_official_genre(80));
+        assert!(!is_official_genre(191));
+        assert!(!is_official_genre(255));
+    }
+
+    #[test]
+    fn test_display_marks_unrecognized_genre_with_an_asterisk() {
+        let data = build_tag(b"", b"", b"", b"", b"", 255); // au-delà même de l'extension Winamp
+        let tag = read_id3v1_tag(&data).unwrap();
+
+        assert!(tag.to_string().contains("Genre      : 255*"));
+    }
+
+    #[test]
+    fn test_display_marks_winamp_extension_genre_with_an_asterisk() {
+        let data = build_tag(b"", b"", b"", b"", b"", 145); // Anime, extension Winamp
+        let tag = read_id3v1_tag(&data).unwrap();
+
+        assert!(tag.to_string().contains("Genre      : Anime*"));
+    }
+
+    #[test]
+    fn test_display_known_genre_has_no_asterisk() {
+        let data = build_tag(b"", b"", b"", b"", b"", 79); // Hard Rock, dernier de la table
+        let tag = read_id3v1_tag(&data).unwrap();
+        let text = tag.to_string();
+
+        assert!(text.contains("Genre      : Hard Rock"));
+        assert!(!text.contains('*'));
     }
 }

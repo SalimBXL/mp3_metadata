@@ -124,7 +124,7 @@ Chaque fonction de parsing (`read_tag`, `read_frame`, `decode_frame`, `decode_st
 ## Limitations connues
 
 - En ID3v2.2, la frame `PIC` (équivalent d'`APIC`) code le format d'image sur 3 lettres (`JPG`, `PNG`, ...) plutôt qu'une chaîne MIME terminée par un nul : sur un tag v2.2, `mime_type` et `description` seront mal découpés. Ce cas n'est pas géré (voir `FrameContent::Picture`).
-- `Id3v1Tag::genre_name()` ne couvre que les 80 genres d'origine de la spécification ID3v1 (index 0 à 79) ; les extensions ultérieures (Winamp et autres) ne sont pas mappées. L'« ID3v1 Extended » (`TAG+`, 227 octets) n'est pas reconnu non plus.
+- `Id3v1Tag::genre_name()` couvre les 80 genres d'origine de la spécification ID3v1 (index 0 à 79) et l'extension Winamp (index 80 à 191) ; au-delà, `None`. L'affichage marque d'un `*` tout nom (ou index brut, si vraiment inconnu) hors des 80 d'origine. L'« ID3v1 Extended » (`TAG+`, 227 octets) n'est pas reconnu.
 - `Mp3File` ne charge les données audio du fichier que sur demande explicite (`read_mp3_file_with_audio`).
 - La durée exacte (Xing/Info/VBRI) ne retranche pas le délai et le padding que certains encodeurs (LAME) ajoutent pour un décodage "gapless" (quelques dizaines de millisecondes). Sans aucun des deux en-têtes, la durée retombe sur une estimation à débit constant, potentiellement fausse pour un fichier VBR (l'affichage le signale par un `~`).
 
