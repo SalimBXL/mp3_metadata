@@ -810,7 +810,9 @@ mod tests {
         assert!(text.contains("Comment    : Super chanson"));
         assert!(text.contains("Track      : 1/17"));
         assert!(text.contains("Genre      : Rock"));
-        assert!(text.contains("Album Artist: Queen")); // 12 caractères : dépasse la largeur de colonne (11), sans espace avant ":"
+        // "Album Artist" : 12 caractères, dépasse la largeur de colonne
+        // (11), donc pas d'espace avant ":".
+        assert!(text.contains("Album Artist: Queen"));
         assert!(text.contains("Cover      : image/jpeg"));
     }
 

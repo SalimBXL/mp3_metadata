@@ -109,7 +109,8 @@ impl fmt::Display for Mp3Error {
             } => {
                 write!(
                     f,
-                    "Taille du tag ID3v2 invalide : {declared} octets, mais seulement {available} octets dans le fichier"
+                    "Taille du tag ID3v2 invalide : {declared} octets, mais seulement \
+                     {available} octets dans le fichier"
                 )
             }
             Mp3Error::UnsupportedVersion { major } => {
@@ -134,7 +135,8 @@ impl fmt::Display for Mp3Error {
             } => {
                 write!(
                     f,
-                    "Frame ID3v2 à l'offset {offset} : taille déclarée ({declared} octets) dépasse les données disponibles ({available} octets)"
+                    "Frame ID3v2 à l'offset {offset} : taille déclarée ({declared} octets) \
+                     dépasse les données disponibles ({available} octets)"
                 )
             }
             Mp3Error::UnknownTextEncoding { encoding } => {
@@ -143,7 +145,8 @@ impl fmt::Display for Mp3Error {
             Mp3Error::InvalidTextData { encoding } => {
                 write!(
                     f,
-                    "Données de texte invalides pour l'encoding {encoding} (BOM manquant/invalide ou séquence mal formée)"
+                    "Données de texte invalides pour l'encoding {encoding} (BOM \
+                     manquant/invalide ou séquence mal formée)"
                 )
             }
         }
