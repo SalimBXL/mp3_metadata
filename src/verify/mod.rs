@@ -21,8 +21,9 @@
 //!   généralement affaire qu'à une poignée de candidats.
 //!
 //! Le rapport obtenu par album, s'il y en a un, est toujours placé en
-//! tête de la liste renvoyée par [`verify_tag`] : voir sa documentation.
-//! Vue tabulaire de plusieurs rapports : voir le sous-module [`table`].
+//! tête de [`VerifyOutcome::reports`] : voir la documentation de
+//! [`verify_tag`]. Vue tabulaire de plusieurs rapports : voir le
+//! sous-module [`table`].
 //!
 //! # Portée volontairement limitée
 //!
@@ -171,13 +172,35 @@ impl From<std::io::Error> for VerifyError {
         VerifyError::Response(err)
     }
 }
+/// Résultat de [`verify_tag`] : les rapports obtenus, et l'éventuelle
+/// erreur de l'étape "recherche par album" si elle a échoué sans empêcher
+/// le reste de réussir (voir la doc de [`verify_tag`]).
+///
+/// `album_search_error` est purement diagnostique : sa présence ne
+/// dégrade en rien [`VerifyOutcome::reports`], qui reste aussi complet
+/// que l'étape 2 (recherche par titre/artiste) le permet. L'appelant est
+/// libre de l'ignorer, de la logger, ou de l'afficher (le CLI le fait en
+/// mode `--verbose`) — sans elle, cette erreur réseau ou de réponse
+/// disparaîtrait sans aucune trace.
+#[derive(Debug)]
+pub struct VerifyOutcome {
+    /// Rapports de vérification, dans le même ordre que documenté par
+    /// [`verify_tag`] (celui de l'étape 1 en tête, s'il y en a un).
+    pub reports: Vec<VerificationReport>,
+    /// Erreur de l'étape "recherche par album", si elle a échoué.
+    pub album_search_error: Option<VerifyError>,
+}
+
 /// Vérifie le titre, l'artiste, l'album et l'année d'un tag ID3v2 auprès de
 /// MusicBrainz.
 ///
 /// Combine deux stratégies — voir la vue d'ensemble en tête de module :
 ///
 /// 1. Si le tag local a un album, tente d'abord [`album::search_by_album`]. En
-///    cas de succès, son rapport est placé en tête du `Vec` renvoyé.
+///    cas de succès, son rapport est placé en tête des rapports renvoyés ;
+///    en cas d'échec, l'erreur est conservée dans
+///    [`VerifyOutcome::album_search_error`] à titre diagnostique (voir sa
+///    doc), sans empêcher l'étape 2 d'être tentée.
 /// 2. Cherche ensuite par titre et/ou artiste (au moins l'un des deux doit
 ///    être présent dans le tag local) et ajoute un rapport par
 ///    enregistrement candidat renvoyé par cette recherche (jusqu'à
@@ -188,8 +211,9 @@ impl From<std::io::Error> for VerifyError {
 /// `limit` si l'appelant n'a pas de préférence.
 ///
 /// Une erreur réseau à l'étape 1 n'empêche pas l'étape 2 d'être tentée
-/// (et inversement) : le `Vec` renvoyé peut donc être incomplet plutôt que
-/// l'appel entier échouer, tant qu'au moins une des deux étapes a abouti.
+/// (et inversement) : [`VerifyOutcome::reports`] peut donc être incomplet
+/// plutôt que l'appel entier échouer, tant qu'au moins une des deux
+/// étapes a abouti.
 ///
 /// # Erreurs
 ///
@@ -202,7 +226,7 @@ impl From<std::io::Error> for VerifyError {
 ///   obtenu.
 /// - [`VerifyError::NoMatch`] si aucune des deux stratégies n'a produit le
 ///   moindre rapport.
-pub fn verify_tag(tag: &Id3v2Tag, limit: u32) -> Result<Vec<VerificationReport>, VerifyError> {
+pub fn verify_tag(tag: &Id3v2Tag, limit: u32) -> Result<VerifyOutcome, VerifyError> {
     let title = tag.title();
     let artist = tag.artist();
 
@@ -211,9 +235,14 @@ pub fn verify_tag(tag: &Id3v2Tag, limit: u32) -> Result<Vec<VerificationReport>,
     }
 
     // Étape 1 : recherche ciblée par album, si le tag local en a un. Une
-    // erreur ici (réseau, réponse illisible, rien trouvé...) est avalée :
-    // ce n'est qu'un complément, l'étape 2 reste la recherche principale.
-    let album_report = album::search_by_album(tag).ok().flatten();
+    // erreur ici (réseau, réponse illisible, rien trouvé...) n'interrompt
+    // pas la vérification : ce n'est qu'un complément, l'étape 2 reste la
+    // recherche principale. L'erreur elle-même est conservée plutôt que
+    // silencieusement perdue — voir `VerifyOutcome::album_search_error`.
+    let (album_report, album_search_error) = match album::search_by_album(tag) {
+        Ok(report) => (report, None),
+        Err(err) => (None, Some(err)),
+    };
     if album_report.is_some() {
         std::thread::sleep(REQUEST_INTERVAL);
     }
@@ -251,7 +280,10 @@ pub fn verify_tag(tag: &Id3v2Tag, limit: u32) -> Result<Vec<VerificationReport>,
         return Err(VerifyError::NoMatch);
     }
 
-    Ok(reports)
+    Ok(VerifyOutcome {
+        reports,
+        album_search_error,
+    })
 }
 /// Requête de recherche par titre/artiste auprès de
 /// [`MUSICBRAINZ_RECORDING_URL`] — la partie réseau de l'étape 2 de

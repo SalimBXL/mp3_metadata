@@ -97,7 +97,7 @@ fn run(
 
     if verify {
         println!();
-        print_verification(tag, limit);
+        print_verification(tag, limit, verbose);
     }
 
     Ok(())
@@ -192,15 +192,29 @@ fn print_frames(tag: &Id3v2Tag) {
 /// Un échec de vérification (pas de réseau, aucun résultat...) n'invalide
 /// pas le reste : le tag local a bien été lu, seul le contrôle en ligne
 /// n'a pas abouti.
-fn print_verification(tag: &Id3v2Tag, limit: u32) {
+/// Lance la vérification MusicBrainz et affiche le tableau de résultats.
+///
+/// En mode `verbose`, affiche aussi sur `stderr` l'erreur de l'étape
+/// "recherche par album" si elle a échoué sans empêcher la vérification
+/// d'aboutir (voir [`mp3_metadata::verify::VerifyOutcome::album_search_error`])
+/// — sinon avalée sans aucune trace, silencieusement.
+fn print_verification(tag: &Id3v2Tag, limit: u32, verbose: bool) {
     #[cfg(feature = "verify")]
     match mp3_metadata::verify::verify_tag(tag, limit) {
-        Ok(reports) => print!("{}", mp3_metadata::verify::VerificationTable(&reports)),
+        Ok(outcome) => {
+            if verbose && let Some(err) = &outcome.album_search_error {
+                eprintln!("Recherche par album ignorée (diagnostic) : {err}");
+            }
+            print!(
+                "{}",
+                mp3_metadata::verify::VerificationTable(&outcome.reports)
+            );
+        }
         Err(err) => eprintln!("Vérification MusicBrainz impossible : {err}"),
     }
     #[cfg(not(feature = "verify"))]
     {
-        let _ = (tag, limit); // non utilisés sans la feature "verify"
+        let _ = (tag, limit, verbose); // non utilisés sans la feature "verify"
         eprintln!("Compilé sans la fonctionnalité 'verify' (voir Cargo.toml)");
     }
 }
