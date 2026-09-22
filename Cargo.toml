@@ -1,14 +1,12 @@
 [package]
 name = "mp3_metadata"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
+tempfile = "3.27.0"
 ureq = { version = "2", features = ["json"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-
-[dev-dependencies]
-tempfile = "3.27.0"
 
 [features]
 default = ["verify"]
