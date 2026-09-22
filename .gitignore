@@ -1,1 +1,22 @@
 /target
+
+# Éditeurs / IDE
+.vscode/
+.idea/
+*.iml
+.vs/
+
+# Fichiers spécifiques à l'OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Fichiers de sauvegarde / temporaires d'éditeur
+*.swp
+*.swo
+*~
+
+# Rapports de couverture de test (ex. cargo-tarpaulin, cargo-llvm-cov)
+*.profraw
+lcov.info
+tarpaulin-report.html
